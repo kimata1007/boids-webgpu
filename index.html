@@ -13,6 +13,10 @@
       <div><span class="k">boids</span> <span id="count">--</span></div>
       <div class="hint">left drag: attract &nbsp; right drag: scatter</div>
     </div>
+    <div id="wing-control">
+      <label for="wing">翼角度 <span id="wing-deg">0</span>°</label>
+      <input id="wing" type="range" min="-30" max="60" value="0" step="1" />
+    </div>
     <div id="msg"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

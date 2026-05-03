@@ -53,6 +53,44 @@ body {
   color: rgba(255, 255, 255, 0.45);
 }
 
+#wing-control {
+  position: fixed;
+  top: 14px;
+  right: 14px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(8, 12, 24, 0.55);
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  user-select: none;
+  letter-spacing: 0.02em;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 180px;
+}
+
+#wing-control label {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+#wing-control #wing-deg {
+  display: inline-block;
+  min-width: 2.4em;
+  text-align: right;
+  color: rgba(255, 255, 255, 0.95);
+}
+
+#wing-control input[type="range"] {
+  width: 100%;
+  accent-color: #6ea8ff;
+  cursor: pointer;
+}
+
 #msg {
   position: fixed;
   inset: 0;

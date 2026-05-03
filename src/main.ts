@@ -2,6 +2,7 @@ import computeWGSL from "./shaders/compute.wgsl?raw";
 import renderWGSL from "./shaders/render.wgsl?raw";
 import { identity, lookAt, multiply, perspective } from "./lib/mat4";
 import { loadGLB } from "./gltf/loader";
+import { computeSkinningMatrices } from "./skin/skeleton";
 
 const NUM_BOIDS = 8000;
 
@@ -112,13 +113,46 @@ async function main(): Promise<void> {
     return;
   }
   const mesh = gltf.mesh;
+  const skeleton = gltf.skeleton;
+  if (!skeleton) {
+    showMessage("pigeon.glb is missing a skin; PR4 needs joints.");
+    return;
+  }
 
-  // CPU-side state we keep around for PR4+ skinning. Not uploaded yet.
-  // Keeping a reference makes the intent obvious to readers and prevents
-  // tree-shakers from dropping the data on a future refactor.
-  void gltf.skeleton;
-  void mesh.joints;
-  void mesh.weights;
+  // PR4 packs joints as uint8x4 in the vertex buffer. The loader can also
+  // return Uint16Array for files that index >255 joints, but that path is not
+  // wired through this pipeline yet. Fail loudly so the next maintainer
+  // notices instead of silently dropping the high byte.
+  // TODO: PR future — support uint16 joint indices end-to-end.
+  if (!(mesh.joints instanceof Uint8Array)) {
+    showMessage(
+      "pigeon.glb uses uint16 joint indices; PR4 only handles uint8x4.",
+    );
+    return;
+  }
+
+  // Defensive normalization. Most exporters produce weights that sum to 1,
+  // but auto-weight rigs occasionally leave tiny rounding error or zeros on
+  // every channel. A zero sum collapses the vertex to the origin during
+  // blending, so when that happens we fall back to "fully bound to joint 0".
+  const normalizedWeights = new Float32Array(mesh.weights.length);
+  for (let v = 0; v < mesh.vertexCount; v++) {
+    const base = v * 4;
+    const sum =
+      mesh.weights[base + 0] +
+      mesh.weights[base + 1] +
+      mesh.weights[base + 2] +
+      mesh.weights[base + 3];
+    if (sum > 1e-6) {
+      const inv = 1 / sum;
+      normalizedWeights[base + 0] = mesh.weights[base + 0] * inv;
+      normalizedWeights[base + 1] = mesh.weights[base + 1] * inv;
+      normalizedWeights[base + 2] = mesh.weights[base + 2] * inv;
+      normalizedWeights[base + 3] = mesh.weights[base + 3] * inv;
+    } else {
+      normalizedWeights[base + 0] = 1;
+    }
+  }
 
   // Each boid: vec4 pos + vec4 vel = 8 floats = 32 bytes.
   const FLOATS_PER_BOID = 8;
@@ -153,26 +187,48 @@ async function main(): Promise<void> {
   device.queue.writeBuffer(boidBuffers[0], 0, initial);
   device.queue.writeBuffer(boidBuffers[1], 0, initial);
 
-  // Vertex buffer: position(vec3) + normal(vec3) interleaved per vertex.
-  // 24 bytes/vertex. Skinning attributes (joints/weights) stay on the CPU
-  // until PR4 upgrades the pipeline.
-  const VERTEX_STRIDE_BYTES = 24;
-  const FLOATS_PER_VERTEX = 6;
-  const interleaved = new Float32Array(mesh.vertexCount * FLOATS_PER_VERTEX);
+  // Vertex buffer layout (PR4): 48 bytes / vertex, interleaved.
+  //   position vec3<f32> @ 0   (12 bytes)
+  //   normal   vec3<f32> @ 12  (12 bytes)
+  //   joints   u8x4      @ 24  (4 bytes)
+  //   _pad0              @ 28  (4 bytes — keep weights aligned to 16)
+  //   weights  vec4<f32> @ 32  (16 bytes)
+  //
+  // We build the buffer through one ArrayBuffer with two views (Float32 for
+  // floats, Uint8 for joint indices) so the typed-byte layout is exact.
+  const VERTEX_STRIDE_BYTES = 48;
+  const vertexByteSize = mesh.vertexCount * VERTEX_STRIDE_BYTES;
+  const interleavedBuffer = new ArrayBuffer(vertexByteSize);
+  const interleavedF32 = new Float32Array(interleavedBuffer);
+  const interleavedU8 = new Uint8Array(interleavedBuffer);
+  const FLOATS_PER_STRIDE = VERTEX_STRIDE_BYTES / 4;
   for (let i = 0; i < mesh.vertexCount; i++) {
-    const dst = i * FLOATS_PER_VERTEX;
-    interleaved[dst + 0] = mesh.positions[i * 3 + 0];
-    interleaved[dst + 1] = mesh.positions[i * 3 + 1];
-    interleaved[dst + 2] = mesh.positions[i * 3 + 2];
-    interleaved[dst + 3] = mesh.normals[i * 3 + 0];
-    interleaved[dst + 4] = mesh.normals[i * 3 + 1];
-    interleaved[dst + 5] = mesh.normals[i * 3 + 2];
+    const fdst = i * FLOATS_PER_STRIDE;
+    const u8dst = i * VERTEX_STRIDE_BYTES;
+    // position
+    interleavedF32[fdst + 0] = mesh.positions[i * 3 + 0];
+    interleavedF32[fdst + 1] = mesh.positions[i * 3 + 1];
+    interleavedF32[fdst + 2] = mesh.positions[i * 3 + 2];
+    // normal
+    interleavedF32[fdst + 3] = mesh.normals[i * 3 + 0];
+    interleavedF32[fdst + 4] = mesh.normals[i * 3 + 1];
+    interleavedF32[fdst + 5] = mesh.normals[i * 3 + 2];
+    // joints (uint8x4) at byte offset 24
+    interleavedU8[u8dst + 24] = mesh.joints[i * 4 + 0];
+    interleavedU8[u8dst + 25] = mesh.joints[i * 4 + 1];
+    interleavedU8[u8dst + 26] = mesh.joints[i * 4 + 2];
+    interleavedU8[u8dst + 27] = mesh.joints[i * 4 + 3];
+    // weights at float offset 8 (= byte offset 32)
+    interleavedF32[fdst + 8] = normalizedWeights[i * 4 + 0];
+    interleavedF32[fdst + 9] = normalizedWeights[i * 4 + 1];
+    interleavedF32[fdst + 10] = normalizedWeights[i * 4 + 2];
+    interleavedF32[fdst + 11] = normalizedWeights[i * 4 + 3];
   }
   const vertexBuffer = device.createBuffer({
-    size: interleaved.byteLength,
+    size: vertexByteSize,
     usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
   });
-  device.queue.writeBuffer(vertexBuffer, 0, interleaved);
+  device.queue.writeBuffer(vertexBuffer, 0, interleavedBuffer);
 
   // Index buffer: pad to 4 bytes for uint16 because writeBuffer requires it
   // when the source array's byte length is odd-aligned for the target stride.
@@ -236,6 +292,15 @@ async function main(): Promise<void> {
     }),
   );
 
+  // Joint matrix Storage Buffer: one mat4x4<f32> per joint (64 bytes each).
+  // Updated every frame from the CPU once we know the slider angle.
+  const jointCount = skeleton.joints.length;
+  const jointBuffer = device.createBuffer({
+    size: jointCount * 64,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  const skinningScratch = new Float32Array(jointCount * 16);
+
   const renderModule = device.createShaderModule({ code: renderWGSL });
   const renderPipeline = device.createRenderPipeline({
     layout: "auto",
@@ -248,6 +313,8 @@ async function main(): Promise<void> {
           attributes: [
             { shaderLocation: 0, offset: 0, format: "float32x3" },
             { shaderLocation: 1, offset: 12, format: "float32x3" },
+            { shaderLocation: 2, offset: 24, format: "uint8x4" },
+            { shaderLocation: 3, offset: 32, format: "float32x4" },
           ],
         },
       ],
@@ -271,7 +338,10 @@ async function main(): Promise<void> {
 
   const renderBindGroup = device.createBindGroup({
     layout: renderPipeline.getBindGroupLayout(0),
-    entries: [{ binding: 0, resource: { buffer: viewBuffer } }],
+    entries: [
+      { binding: 0, resource: { buffer: viewBuffer } },
+      { binding: 1, resource: { buffer: jointBuffer } },
+    ],
   });
 
   // Mouse / pointer state, in canvas-space NDC ([-1, 1])
@@ -293,6 +363,23 @@ async function main(): Promise<void> {
   canvas.addEventListener("pointerup", () => { pointer.mode = 0; });
   canvas.addEventListener("pointercancel", () => { pointer.mode = 0; });
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
+  // Wing-angle slider (PR4 stand-in for the time-based animation in PR5).
+  let wingAngleRadians = 0;
+  const wingSlider = document.getElementById("wing") as HTMLInputElement | null;
+  const wingLabel = document.getElementById("wing-deg");
+  if (wingSlider) {
+    const applyWingValue = (): void => {
+      const deg = parseFloat(wingSlider.value);
+      if (wingLabel) {
+        wingLabel.textContent = String(Math.round(deg));
+      }
+      wingAngleRadians = (deg * Math.PI) / 180;
+    };
+    wingSlider.addEventListener("input", applyWingValue);
+    // Initialize from whatever the markup defaulted to (should be 0).
+    applyWingValue();
+  }
 
   const countEl = document.getElementById("count");
   // The HUD count was tied to the procedural boid render. PR3 draws one
@@ -371,6 +458,16 @@ async function main(): Promise<void> {
     view[34] = 0;
     view[35] = 0;
     device.queue.writeBuffer(viewBuffer, 0, view);
+
+    // PR4: refresh the joint matrices every frame. The wing override is the
+    // only dynamic input for now; once PR5 wires in time-based animation we
+    // will pass an extended override here instead of a single angle.
+    computeSkinningMatrices(
+      skeleton,
+      { wingAngleRadians },
+      skinningScratch,
+    );
+    device.queue.writeBuffer(jointBuffer, 0, skinningScratch);
 
     const depth = ensureDepthTexture();
 
