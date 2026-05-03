@@ -54,9 +54,28 @@ export type GltfSkeleton = {
   inverseBindMatrices: Float32Array<ArrayBuffer>; // 16 x jointCount, column-major
 };
 
+export type AnimationInterpolation = "LINEAR" | "STEP" | "CUBICSPLINE";
+
+export type AnimationPath = "translation" | "rotation" | "scale";
+
+export type AnimationChannel = {
+  jointIndex: number; // index into the skeleton's (topo-sorted) joints array
+  path: AnimationPath;
+  times: Float32Array; // sample times in seconds, monotonic
+  values: Float32Array; // flat: [x,y,z, ...] for T/S, [x,y,z,w, ...] for R
+  interpolation: AnimationInterpolation;
+};
+
+export type Animation = {
+  name: string;
+  duration: number; // seconds; max(times) across all channels
+  channels: AnimationChannel[];
+};
+
 export type GltfDocument = {
   mesh: GltfMesh;
   skeleton: GltfSkeleton | null;
+  animations: Animation[];
 };
 
 // Minimal subset of the glTF JSON manifest we actually read.
@@ -99,6 +118,18 @@ type GltfJson = {
     mesh?: number;
     skin?: number;
   }>;
+  animations?: Array<{
+    name?: string;
+    channels: Array<{
+      sampler: number;
+      target: { node?: number; path: string };
+    }>;
+    samplers: Array<{
+      input: number;
+      output: number;
+      interpolation?: string;
+    }>;
+  }>;
 };
 
 export async function loadGLB(url: string): Promise<GltfDocument> {
@@ -111,8 +142,12 @@ export async function loadGLB(url: string): Promise<GltfDocument> {
   const buffer = await response.arrayBuffer();
   const { json, bin } = parseGlbContainer(buffer);
   const mesh = extractMesh(json, bin);
-  const skeleton = extractSkeleton(json, bin);
-  return { mesh, skeleton };
+  const skinResult = extractSkeleton(json, bin);
+  const skeleton = skinResult ? skinResult.skeleton : null;
+  const animations = skinResult
+    ? extractAnimations(json, bin, skinResult.nodeToJointIdx)
+    : [];
+  return { mesh, skeleton, animations };
 }
 
 function parseGlbContainer(buffer: ArrayBuffer): {
@@ -442,7 +477,7 @@ function extractMesh(json: GltfJson, bin: Uint8Array): GltfMesh {
 function extractSkeleton(
   json: GltfJson,
   bin: Uint8Array,
-): GltfSkeleton | null {
+): { skeleton: GltfSkeleton; nodeToJointIdx: Map<number, number> } | null {
   const skins = json.skins ?? [];
   if (skins.length === 0) {
     return null;
@@ -533,10 +568,136 @@ function extractSkeleton(
     }
   }
 
+  // Map glTF node index -> the *new* joint index in the topologically sorted
+  // joint array. Used by extractAnimations to resolve channel targets, and
+  // useful in general for linking animation/skin data back to nodes.
+  const nodeToSortedJointIdx = new Map<number, number>();
+  for (let newIdx = 0; newIdx < sortedJoints.length; newIdx++) {
+    const oldIdx = sortedJoints[newIdx].originalIdx;
+    nodeToSortedJointIdx.set(jointNodeIndices[oldIdx], newIdx);
+  }
+
   return {
-    joints: sortedJoints.map((j) => j.joint),
-    inverseBindMatrices,
+    skeleton: {
+      joints: sortedJoints.map((j) => j.joint),
+      inverseBindMatrices,
+    },
+    nodeToJointIdx: nodeToSortedJointIdx,
   };
+}
+
+function extractAnimations(
+  json: GltfJson,
+  bin: Uint8Array,
+  nodeToJointIdx: Map<number, number>,
+): Animation[] {
+  const animations = json.animations ?? [];
+  if (animations.length === 0) {
+    return [];
+  }
+  const result: Animation[] = [];
+  for (let ai = 0; ai < animations.length; ai++) {
+    const anim = animations[ai];
+    const samplers = anim.samplers ?? [];
+    const fieldRoot = `animations[${ai}]`;
+    const channels: AnimationChannel[] = [];
+    for (let ci = 0; ci < anim.channels.length; ci++) {
+      const ch = anim.channels[ci];
+      const fieldPath = `${fieldRoot}.channels[${ci}]`;
+      const targetNode = ch.target?.node;
+      const path = ch.target?.path;
+      if (targetNode === undefined || path === undefined) {
+        // Channels without a target node are no-ops; skip silently.
+        continue;
+      }
+      if (path === "weights") {
+        // Morph-target weight animation is out of scope for our pigeon.
+        // Skip with a warning so the next maintainer notices if it appears.
+        console.warn(
+          `glTF: ${fieldPath} targets morph weights; skipping (not supported)`,
+        );
+        continue;
+      }
+      if (path !== "translation" && path !== "rotation" && path !== "scale") {
+        console.warn(
+          `glTF: ${fieldPath} has unknown path ${path}; skipping`,
+        );
+        continue;
+      }
+      const jointIndex = nodeToJointIdx.get(targetNode);
+      if (jointIndex === undefined) {
+        // Channel targets a node that is not part of the skin's joint set.
+        // We have no way to apply it through the joint matrices, so drop it.
+        console.warn(
+          `glTF: ${fieldPath} targets node ${targetNode} which is not a skin joint; skipping`,
+        );
+        continue;
+      }
+      const sampler = samplers[ch.sampler];
+      if (!sampler) {
+        throw new Error(
+          `glTF: ${fieldPath} references missing sampler ${ch.sampler}`,
+        );
+      }
+      const interpolationRaw = sampler.interpolation ?? "LINEAR";
+      if (
+        interpolationRaw !== "LINEAR" &&
+        interpolationRaw !== "STEP" &&
+        interpolationRaw !== "CUBICSPLINE"
+      ) {
+        throw new Error(
+          `glTF: ${fieldPath} sampler has unknown interpolation ${interpolationRaw}`,
+        );
+      }
+      // TODO: support CUBICSPLINE. Its output stride is 3x (in-tangent, value,
+      // out-tangent per keyframe) and the evaluator differs. The PR2 asset is
+      // LINEAR / STEP only, so we throw loudly if any future asset uses it.
+      if (interpolationRaw === "CUBICSPLINE") {
+        throw new Error(
+          `glTF: ${fieldPath} uses CUBICSPLINE interpolation; not yet supported`,
+        );
+      }
+      const times = readFloat32(
+        json,
+        bin,
+        sampler.input,
+        `${fieldPath}.sampler.input`,
+        1,
+      );
+      const expectedComponents = path === "rotation" ? 4 : 3;
+      const values = readFloat32(
+        json,
+        bin,
+        sampler.output,
+        `${fieldPath}.sampler.output`,
+        expectedComponents,
+      );
+      if (values.length !== times.length * expectedComponents) {
+        throw new Error(
+          `glTF: ${fieldPath} sampler output length ${values.length} mismatches times*${expectedComponents} (=${times.length * expectedComponents})`,
+        );
+      }
+      channels.push({
+        jointIndex,
+        path,
+        times,
+        values,
+        interpolation: interpolationRaw,
+      });
+    }
+    let duration = 0;
+    for (const ch of channels) {
+      if (ch.times.length === 0) continue;
+      const last = ch.times[ch.times.length - 1];
+      if (last > duration) duration = last;
+    }
+    result.push({
+      name: anim.name ?? `animation_${ai}`,
+      duration,
+      channels,
+    });
+  }
+  return result;
 }
 
 // Topological sort by parentIdx. Returns the new order plus a back-reference

@@ -3,6 +3,7 @@ import renderWGSL from "./shaders/render.wgsl?raw";
 import { identity, lookAt, multiply, perspective } from "./lib/mat4";
 import { loadGLB } from "./gltf/loader";
 import { computeSkinningMatrices } from "./skin/skeleton";
+import { applyAnimation } from "./animation/sampler";
 
 const NUM_BOIDS = 8000;
 
@@ -118,6 +119,14 @@ async function main(): Promise<void> {
     showMessage("pigeon.glb is missing a skin; PR4 needs joints.");
     return;
   }
+  // PR5 requires at least one baked animation. Without it the pigeon would
+  // freeze in the bind pose; surface that as an explicit user-facing error
+  // rather than silently shipping a static render.
+  if (gltf.animations.length === 0) {
+    showMessage("pigeon.glb has no animations; PR5 needs at least one.");
+    return;
+  }
+  const anim = gltf.animations[0];
 
   // PR4 packs joints as uint8x4 in the vertex buffer. The loader can also
   // return Uint16Array for files that index >255 joints, but that path is not
@@ -364,21 +373,21 @@ async function main(): Promise<void> {
   canvas.addEventListener("pointercancel", () => { pointer.mode = 0; });
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
-  // Wing-angle slider (PR4 stand-in for the time-based animation in PR5).
-  let wingAngleRadians = 0;
-  const wingSlider = document.getElementById("wing") as HTMLInputElement | null;
-  const wingLabel = document.getElementById("wing-deg");
-  if (wingSlider) {
-    const applyWingValue = (): void => {
-      const deg = parseFloat(wingSlider.value);
-      if (wingLabel) {
-        wingLabel.textContent = String(Math.round(deg));
-      }
-      wingAngleRadians = (deg * Math.PI) / 180;
-    };
-    wingSlider.addEventListener("input", applyWingValue);
-    // Initialize from whatever the markup defaulted to (should be 0).
-    applyWingValue();
+  // PR5: pause/play toggle. The animation is driven by `animElapsed`, which
+  // accumulates only while `paused === false`. We never freeze the boid sim
+  // or the framerate counter — only the pigeon's flap clock.
+  let paused = false;
+  const pauseButton = document.getElementById("pause") as HTMLButtonElement | null;
+  const PAUSE_LABEL_PLAYING = "⏸ Pause";
+  const PAUSE_LABEL_PAUSED = "▶ Play";
+  if (pauseButton) {
+    pauseButton.textContent = PAUSE_LABEL_PLAYING;
+    pauseButton.addEventListener("click", () => {
+      paused = !paused;
+      pauseButton.textContent = paused
+        ? PAUSE_LABEL_PAUSED
+        : PAUSE_LABEL_PLAYING;
+    });
   }
 
   const countEl = document.getElementById("count");
@@ -392,6 +401,10 @@ async function main(): Promise<void> {
   let lastT = startT;
   let smoothedFps = 60;
   let fpsUpdateTimer = 0;
+  // PR5: animation playback clock. Advances by `dt` each frame *unless* the
+  // user has paused; that way the flap loop freezes mid-cycle instead of
+  // snapping back to the start when paused.
+  let animElapsed = 0;
 
   const params = new Float32Array(PARAMS_FLOATS);
   const view = new Float32Array(VIEW_FLOATS);
@@ -459,14 +472,15 @@ async function main(): Promise<void> {
     view[35] = 0;
     device.queue.writeBuffer(viewBuffer, 0, view);
 
-    // PR4: refresh the joint matrices every frame. The wing override is the
-    // only dynamic input for now; once PR5 wires in time-based animation we
-    // will pass an extended override here instead of a single angle.
-    computeSkinningMatrices(
-      skeleton,
-      { wingAngleRadians },
-      skinningScratch,
-    );
+    // PR5: drive the flap from the baked glTF animation. `applyAnimation`
+    // mutates the joints' TRS in place; `computeSkinningMatrices` then reads
+    // those values when composing each joint's local matrix, so the GPU sees
+    // a fresh set of skinning matrices every frame.
+    if (!paused) {
+      animElapsed += dt;
+    }
+    applyAnimation(skeleton, anim, animElapsed);
+    computeSkinningMatrices(skeleton, skinningScratch);
     device.queue.writeBuffer(jointBuffer, 0, skinningScratch);
 
     const depth = ensureDepthTexture();
