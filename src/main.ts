@@ -1,6 +1,7 @@
 import computeWGSL from "./shaders/compute.wgsl?raw";
 import renderWGSL from "./shaders/render.wgsl?raw";
-import { lookAt, multiply, perspective } from "./lib/mat4";
+import { identity, lookAt, multiply, perspective } from "./lib/mat4";
+import { loadGLB } from "./gltf/loader";
 
 const NUM_BOIDS = 8000;
 
@@ -32,6 +33,11 @@ const CAMERA = {
   near: 0.05,
   far: 50,
 };
+
+// PR3 model placement: the bind-pose pigeon is roughly 1.6m tall in glTF
+// units, which is way too big for the existing camera framing. Scale it
+// down so the body sits comfortably inside the view.
+const PIGEON_MODEL_SCALE = 0.5;
 
 function showMessage(text: string): void {
   const msg = document.getElementById("msg");
@@ -95,6 +101,25 @@ async function main(): Promise<void> {
   resize();
   window.addEventListener("resize", resize);
 
+  // Load the static glTF mesh up front so we can size GPU buffers correctly.
+  let gltf;
+  try {
+    gltf = await loadGLB("/pigeon.glb");
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    showMessage(`Failed to load pigeon.glb: ${message}`);
+    console.error(error);
+    return;
+  }
+  const mesh = gltf.mesh;
+
+  // CPU-side state we keep around for PR4+ skinning. Not uploaded yet.
+  // Keeping a reference makes the intent obvious to readers and prevents
+  // tree-shakers from dropping the data on a future refactor.
+  void gltf.skeleton;
+  void mesh.joints;
+  void mesh.weights;
+
   // Each boid: vec4 pos + vec4 vel = 8 floats = 32 bytes.
   const FLOATS_PER_BOID = 8;
   const boidByteStride = FLOATS_PER_BOID * 4;
@@ -128,6 +153,38 @@ async function main(): Promise<void> {
   device.queue.writeBuffer(boidBuffers[0], 0, initial);
   device.queue.writeBuffer(boidBuffers[1], 0, initial);
 
+  // Vertex buffer: position(vec3) + normal(vec3) interleaved per vertex.
+  // 24 bytes/vertex. Skinning attributes (joints/weights) stay on the CPU
+  // until PR4 upgrades the pipeline.
+  const VERTEX_STRIDE_BYTES = 24;
+  const FLOATS_PER_VERTEX = 6;
+  const interleaved = new Float32Array(mesh.vertexCount * FLOATS_PER_VERTEX);
+  for (let i = 0; i < mesh.vertexCount; i++) {
+    const dst = i * FLOATS_PER_VERTEX;
+    interleaved[dst + 0] = mesh.positions[i * 3 + 0];
+    interleaved[dst + 1] = mesh.positions[i * 3 + 1];
+    interleaved[dst + 2] = mesh.positions[i * 3 + 2];
+    interleaved[dst + 3] = mesh.normals[i * 3 + 0];
+    interleaved[dst + 4] = mesh.normals[i * 3 + 1];
+    interleaved[dst + 5] = mesh.normals[i * 3 + 2];
+  }
+  const vertexBuffer = device.createBuffer({
+    size: interleaved.byteLength,
+    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(vertexBuffer, 0, interleaved);
+
+  // Index buffer: pad to 4 bytes for uint16 because writeBuffer requires it
+  // when the source array's byte length is odd-aligned for the target stride.
+  const indicesIsUint16 = mesh.indices instanceof Uint16Array;
+  const indexFormat: GPUIndexFormat = indicesIsUint16 ? "uint16" : "uint32";
+  const indexByteLength = roundUpToMultipleOf(mesh.indices.byteLength, 4);
+  const indexBuffer = device.createBuffer({
+    size: indexByteLength,
+    usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(indexBuffer, 0, mesh.indices);
+
   // Params uniform layout (matches compute.wgsl `Params`):
   //   dt           f32  @0
   //   mouseMode    f32  @4
@@ -150,12 +207,13 @@ async function main(): Promise<void> {
   });
 
   // View uniform layout (matches render.wgsl `ViewUniform`):
-  //   mvp          mat4 @0  (64 bytes)
-  //   maxSpeed     f32  @64
-  //   time         f32  @68
-  //   _pad0        vec2 @72 (8 bytes)
-  // Total: 80 bytes.
-  const VIEW_FLOATS = 20;
+  //   mvp          mat4 @0    (64 bytes)
+  //   model        mat4 @64   (64 bytes)
+  //   maxSpeed     f32  @128
+  //   time         f32  @132
+  //   _pad0        vec2 @136  (8 bytes)
+  // Total: 144 bytes (16-byte aligned).
+  const VIEW_FLOATS = 36;
   const viewBuffer = device.createBuffer({
     size: VIEW_FLOATS * 4,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -181,29 +239,29 @@ async function main(): Promise<void> {
   const renderModule = device.createShaderModule({ code: renderWGSL });
   const renderPipeline = device.createRenderPipeline({
     layout: "auto",
-    vertex: { module: renderModule, entryPoint: "vs_main" },
-    fragment: {
+    vertex: {
       module: renderModule,
-      entryPoint: "fs_main",
-      targets: [
+      entryPoint: "vs_main",
+      buffers: [
         {
-          format,
-          blend: {
-            color: {
-              srcFactor: "src-alpha",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
-            alpha: {
-              srcFactor: "one",
-              dstFactor: "one-minus-src-alpha",
-              operation: "add",
-            },
-          },
+          arrayStride: VERTEX_STRIDE_BYTES,
+          attributes: [
+            { shaderLocation: 0, offset: 0, format: "float32x3" },
+            { shaderLocation: 1, offset: 12, format: "float32x3" },
+          ],
         },
       ],
     },
-    primitive: { topology: "triangle-list" },
+    fragment: {
+      module: renderModule,
+      entryPoint: "fs_main",
+      targets: [{ format }],
+    },
+    primitive: {
+      topology: "triangle-list",
+      cullMode: "back",
+      frontFace: "ccw",
+    },
     depthStencil: {
       format: "depth24plus",
       depthCompare: "less",
@@ -211,15 +269,10 @@ async function main(): Promise<void> {
     },
   });
 
-  const renderBindGroups: GPUBindGroup[] = [0, 1].map((i) =>
-    device.createBindGroup({
-      layout: renderPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: boidBuffers[i] } },
-        { binding: 1, resource: { buffer: viewBuffer } },
-      ],
-    }),
-  );
+  const renderBindGroup = device.createBindGroup({
+    layout: renderPipeline.getBindGroupLayout(0),
+    entries: [{ binding: 0, resource: { buffer: viewBuffer } }],
+  });
 
   // Mouse / pointer state, in canvas-space NDC ([-1, 1])
   const pointer = { x: 0, y: 0, mode: 0 as -1 | 0 | 1 };
@@ -242,7 +295,9 @@ async function main(): Promise<void> {
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
   const countEl = document.getElementById("count");
-  if (countEl) countEl.textContent = String(NUM_BOIDS);
+  // The HUD count was tied to the procedural boid render. PR3 draws one
+  // pigeon, so override the figure to make the HUD honest.
+  if (countEl) countEl.textContent = "1";
   const fpsEl = document.getElementById("fps");
 
   let frame = 0;
@@ -253,6 +308,8 @@ async function main(): Promise<void> {
 
   const params = new Float32Array(PARAMS_FLOATS);
   const view = new Float32Array(VIEW_FLOATS);
+  const modelMat = makeUniformScaleMatrix(PIGEON_MODEL_SCALE);
+  const indexCount = mesh.indices.length;
 
   const tick = (): void => {
     const now = performance.now();
@@ -308,10 +365,11 @@ async function main(): Promise<void> {
     const viewMat = lookAt(CAMERA.eye, CAMERA.target, CAMERA.up);
     const mvp = multiply(proj, viewMat);
     view.set(mvp, 0);
-    view[16] = SIM.maxSpeed;
-    view[17] = (now - startT) / 1000;
-    view[18] = 0;
-    view[19] = 0;
+    view.set(modelMat, 16);
+    view[32] = SIM.maxSpeed;
+    view[33] = (now - startT) / 1000;
+    view[34] = 0;
+    view[35] = 0;
     device.queue.writeBuffer(viewBuffer, 0, view);
 
     const depth = ensureDepthTexture();
@@ -344,9 +402,11 @@ async function main(): Promise<void> {
         },
       });
       pass.setPipeline(renderPipeline);
-      pass.setBindGroup(0, renderBindGroups[(frame + 1) % 2]);
-      // 6 vertices = 2 triangles forming a bird silhouette (head, two wing tips, tail notch).
-      pass.draw(6, NUM_BOIDS);
+      pass.setBindGroup(0, renderBindGroup);
+      pass.setVertexBuffer(0, vertexBuffer);
+      pass.setIndexBuffer(indexBuffer, indexFormat);
+      // PR3: a single static pigeon. PR6 will reintroduce instancing.
+      pass.drawIndexed(indexCount, 1, 0, 0, 0);
       pass.end();
     }
 
@@ -357,6 +417,20 @@ async function main(): Promise<void> {
   };
 
   requestAnimationFrame(tick);
+}
+
+// Build a column-major 4x4 with uniform scale on the diagonal.
+function makeUniformScaleMatrix(s: number): Float32Array {
+  const m = identity();
+  m[0] = s;
+  m[5] = s;
+  m[10] = s;
+  return m;
+}
+
+function roundUpToMultipleOf(value: number, multiple: number): number {
+  const remainder = value % multiple;
+  return remainder === 0 ? value : value + (multiple - remainder);
 }
 
 main().catch((err: unknown) => {
