@@ -7,26 +7,44 @@ struct ViewUniform {
 }
 
 @group(0) @binding(0) var<uniform> view: ViewUniform;
+@group(0) @binding(1) var<storage, read> jointMatrices: array<mat4x4<f32>>;
 
 struct VSOut {
   @builtin(position) clip: vec4<f32>,
   @location(0) normal: vec3<f32>,
 }
 
-// PR3: render a single static glTF mesh. The vertex stream comes from a
-// vertex buffer (position + normal interleaved). The compute pass still
-// runs the boid simulation in the background, but we draw a single
-// instance of this mesh while we wire skinning up in PR4+.
+// PR4: linear-blend skinning. Each vertex carries up to four joint indices
+// (uint8x4, widened to vec4<u32> by the WebGPU vertex stage) and matching
+// floating-point weights. The blended skinning matrix `m` deforms the vertex
+// in the model's bone space; `view.model` then places the whole pigeon in
+// world space. When all override angles are zero, `m` collapses to identity
+// for every vertex, so the bind pose matches the static PR3 render exactly.
 @vertex
 fn vs_main(
   @location(0) position: vec3<f32>,
   @location(1) normal: vec3<f32>,
+  @location(2) joints: vec4<u32>,
+  @location(3) weights: vec4<f32>,
 ) -> VSOut {
-  let world4 = view.model * vec4<f32>(position, 1.0);
-  // Treat model as a rigid + uniform-scale transform; passing w=0 is enough
-  // to drop translation. PR3 only uses identity-scale-translation so we do
-  // not need a proper inverse-transpose normal matrix yet.
-  let normalWorld = (view.model * vec4<f32>(normal, 0.0)).xyz;
+  let p = vec4<f32>(position, 1.0);
+  let n = vec4<f32>(normal, 0.0);
+
+  let m =
+    jointMatrices[joints.x] * weights.x +
+    jointMatrices[joints.y] * weights.y +
+    jointMatrices[joints.z] * weights.z +
+    jointMatrices[joints.w] * weights.w;
+
+  let skinnedPos = m * p;
+  let skinnedNorm = m * n;
+
+  let world4 = view.model * skinnedPos;
+  // Treat model as a rigid + uniform-scale transform; passing w=0 drops the
+  // translation column. PR4 still uses identity-scale-translation for the
+  // model placement, so we do not need a proper inverse-transpose normal
+  // matrix yet.
+  let normalWorld = (view.model * vec4<f32>(skinnedNorm.xyz, 0.0)).xyz;
 
   var out: VSOut;
   out.clip = view.mvp * world4;
