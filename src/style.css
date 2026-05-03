@@ -74,21 +74,26 @@ body {
   min-width: 180px;
 }
 
-#wing-control label {
-  color: rgba(255, 255, 255, 0.85);
-}
-
-#wing-control #wing-deg {
-  display: inline-block;
-  min-width: 2.4em;
-  text-align: right;
+#wing-control button {
+  appearance: none;
+  background: rgba(110, 168, 255, 0.16);
   color: rgba(255, 255, 255, 0.95);
+  border: 1px solid rgba(110, 168, 255, 0.45);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font: inherit;
+  cursor: pointer;
+  letter-spacing: 0.04em;
+  transition: background 120ms ease, border-color 120ms ease;
 }
 
-#wing-control input[type="range"] {
-  width: 100%;
-  accent-color: #6ea8ff;
-  cursor: pointer;
+#wing-control button:hover {
+  background: rgba(110, 168, 255, 0.28);
+  border-color: rgba(110, 168, 255, 0.7);
+}
+
+#wing-control button:active {
+  background: rgba(110, 168, 255, 0.4);
 }
 
 #msg {

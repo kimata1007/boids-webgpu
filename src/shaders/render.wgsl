@@ -18,8 +18,9 @@ struct VSOut {
 // (uint8x4, widened to vec4<u32> by the WebGPU vertex stage) and matching
 // floating-point weights. The blended skinning matrix `m` deforms the vertex
 // in the model's bone space; `view.model` then places the whole pigeon in
-// world space. When all override angles are zero, `m` collapses to identity
-// for every vertex, so the bind pose matches the static PR3 render exactly.
+// world space. When the per-joint TRS still matches the bind pose, `m`
+// collapses to identity for every vertex, so the bind pose matches the
+// static PR3 render exactly. PR5 drives the TRS from a baked animation.
 @vertex
 fn vs_main(
   @location(0) position: vec3<f32>,

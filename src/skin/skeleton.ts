@@ -1,31 +1,26 @@
 // Compute per-joint skinning matrices for a glTF skeleton.
 //
 // The skinning matrix uploaded to the GPU is `world * inverseBind`, where
-// `world` is the joint's world-space transform after parent propagation and
-// any per-joint overrides (currently just the wing bones). When the override
-// is zero this collapses to the bind pose: `world` equals the joint's bind-
-// time world transform, and `world * inverseBind` is identity, so the mesh
-// stays exactly where the static PR3 path drew it.
+// `world` is the joint's world-space transform after parent propagation. The
+// joint's local TRS is read straight off the joint struct, so any external
+// system (PR5's animation sampler, future IK passes, etc.) can drive motion
+// just by mutating `joint.translation/rotation/scale` before calling this.
 //
-// The joint array is assumed to be topologically sorted (parent before child)
-// — the glTF loader takes care of that — so a single forward pass is enough.
+// When the TRS values still match the bind pose, `world` equals the joint's
+// bind-time world transform, so `world * inverseBind` collapses to identity
+// and the mesh draws exactly where the static PR3 path placed it.
+//
+// The joint array is assumed to be topologically sorted (parent before
+// child) — the glTF loader takes care of that — so a single forward pass is
+// enough to propagate transforms.
 
 import type { GltfSkeleton } from "../gltf/loader";
-import { composeTRS, multiplyInto, rotationX } from "../lib/mat4";
-
-export type WingOverride = {
-  wingAngleRadians: number;
-};
-
-const WING_LEFT_NAME = "Wing_L";
-const WING_RIGHT_NAME = "Wing_R";
+import { composeTRS, multiplyInto } from "../lib/mat4";
 
 // Reused per call to avoid allocating one Float32Array per joint per frame.
 // Sized lazily on first use because the joint count is known only at runtime.
 const scratch = {
   worldMatrices: null as Float32Array | null,
-  local: new Float32Array(16),
-  rotated: new Float32Array(16),
 };
 
 function ensureWorldBuffer(jointCount: number): Float32Array {
@@ -38,7 +33,6 @@ function ensureWorldBuffer(jointCount: number): Float32Array {
 
 export function computeSkinningMatrices(
   skeleton: GltfSkeleton,
-  override: WingOverride,
   out: Float32Array,
 ): void {
   const joints = skeleton.joints;
@@ -48,24 +42,7 @@ export function computeSkinningMatrices(
 
   for (let i = 0; i < jointCount; i++) {
     const joint = joints[i];
-    let local = composeTRS(joint.translation, joint.rotation, joint.scale);
-
-    // Wing override is applied in the joint's local frame (post-multiply),
-    // so it composes with whatever rotation the bind pose already encodes.
-    if (joint.name === WING_LEFT_NAME && override.wingAngleRadians !== 0) {
-      const rx = rotationX(override.wingAngleRadians);
-      const rotated = new Float32Array(16);
-      multiplyInto(rotated, local, rx);
-      local = rotated;
-    } else if (
-      joint.name === WING_RIGHT_NAME &&
-      override.wingAngleRadians !== 0
-    ) {
-      const rx = rotationX(-override.wingAngleRadians);
-      const rotated = new Float32Array(16);
-      multiplyInto(rotated, local, rx);
-      local = rotated;
-    }
+    const local = composeTRS(joint.translation, joint.rotation, joint.scale);
 
     // worldMatrix[i] = parent.world * local. Roots inherit identity so we
     // just copy local in.
