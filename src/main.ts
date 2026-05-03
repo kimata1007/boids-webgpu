@@ -169,7 +169,8 @@ async function main(): Promise<void> {
   const fpsEl = document.getElementById("fps");
 
   let frame = 0;
-  let lastT = performance.now();
+  const startT = performance.now();
+  let lastT = startT;
   let smoothedFps = 60;
   let fpsUpdateTimer = 0;
 
@@ -213,6 +214,7 @@ async function main(): Promise<void> {
 
     view[0] = aspect;
     view[1] = SIM.maxSpeed;
+    view[2] = (now - startT) / 1000;
     device.queue.writeBuffer(viewBuffer, 0, view);
 
     const enc = device.createCommandEncoder();
@@ -238,7 +240,8 @@ async function main(): Promise<void> {
       });
       pass.setPipeline(renderPipeline);
       pass.setBindGroup(0, renderBindGroups[(frame + 1) % 2]);
-      pass.draw(3, NUM_BOIDS);
+      // 6 vertices = 2 triangles forming a bird silhouette (head, two wing tips, tail notch).
+      pass.draw(6, NUM_BOIDS);
       pass.end();
     }
 
