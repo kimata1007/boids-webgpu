@@ -1,17 +1,36 @@
 import computeWGSL from "./shaders/compute.wgsl?raw";
 import renderWGSL from "./shaders/render.wgsl?raw";
+import { lookAt, multiply, perspective } from "./lib/mat4";
 
 const NUM_BOIDS = 8000;
 
+// Half-extents of the simulation volume.
+// x: lateral (scaled by aspect each frame), y: altitude, z: depth.
+const SIM_BASE_BOUNDS = {
+  x: 1.0,
+  y: 0.4,
+  z: 1.0,
+};
+
 const SIM = {
-  cohesionRadius: 0.05,
-  separationRadius: 0.018,
-  alignmentRadius: 0.04,
-  maxSpeed: 0.45,
+  cohesionRadius: 0.08,
+  separationRadius: 0.025,
+  alignmentRadius: 0.06,
+  maxSpeed: 0.55,
   cohesion: 1.4,
-  separation: 0.6,
+  separation: 0.8,
   alignment: 2.5,
-  mouseStrength: 1.6,
+  mouseStrength: 1.8,
+};
+
+// Camera: tilted, slightly elevated, looking at the origin.
+const CAMERA = {
+  eye: [0, 0.55, 1.6] as [number, number, number],
+  target: [0, 0, 0] as [number, number, number],
+  up: [0, 1, 0] as [number, number, number],
+  fovY: Math.PI / 3,
+  near: 0.05,
+  far: 50,
 };
 
 function showMessage(text: string): void {
@@ -47,6 +66,28 @@ async function main(): Promise<void> {
   ctx.configure({ device, format, alphaMode: "opaque" });
 
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+  // Depth texture is recreated whenever the canvas size changes.
+  let depthTexture: GPUTexture | null = null;
+  const ensureDepthTexture = (): GPUTexture => {
+    if (
+      depthTexture &&
+      depthTexture.width === canvas.width &&
+      depthTexture.height === canvas.height
+    ) {
+      return depthTexture;
+    }
+    if (depthTexture) {
+      depthTexture.destroy();
+    }
+    depthTexture = device.createTexture({
+      size: [canvas.width, canvas.height],
+      format: "depth24plus",
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    return depthTexture;
+  };
+
   const resize = (): void => {
     canvas.width = Math.max(1, Math.floor(canvas.clientWidth * dpr));
     canvas.height = Math.max(1, Math.floor(canvas.clientHeight * dpr));
@@ -54,18 +95,28 @@ async function main(): Promise<void> {
   resize();
   window.addEventListener("resize", resize);
 
-  // Each boid: pos.xy + vel.xy = 4 floats = 16 bytes
-  const boidByteStride = 16;
+  // Each boid: vec4 pos + vec4 vel = 8 floats = 32 bytes.
+  const FLOATS_PER_BOID = 8;
+  const boidByteStride = FLOATS_PER_BOID * 4;
   const boidByteSize = NUM_BOIDS * boidByteStride;
 
-  const initial = new Float32Array(NUM_BOIDS * 4);
+  const aspectInit = canvas.width / Math.max(canvas.height, 1);
+  const initial = new Float32Array(NUM_BOIDS * FLOATS_PER_BOID);
   for (let i = 0; i < NUM_BOIDS; i++) {
-    initial[i * 4 + 0] = (Math.random() * 2 - 1) * 0.9;
-    initial[i * 4 + 1] = (Math.random() * 2 - 1) * 0.9;
-    const a = Math.random() * Math.PI * 2;
+    const base = i * FLOATS_PER_BOID;
+    initial[base + 0] = (Math.random() * 2 - 1) * aspectInit * 0.9;
+    initial[base + 1] = (Math.random() * 2 - 1) * SIM_BASE_BOUNDS.y * 0.9;
+    initial[base + 2] = (Math.random() * 2 - 1) * SIM_BASE_BOUNDS.z * 0.9;
+    initial[base + 3] = 0;
+    // Random direction on the unit sphere, then scale to a small initial speed.
+    const u = Math.random() * 2 - 1;
+    const theta = Math.random() * Math.PI * 2;
+    const r = Math.sqrt(Math.max(0, 1 - u * u));
     const s = 0.05 + Math.random() * 0.08;
-    initial[i * 4 + 2] = Math.cos(a) * s;
-    initial[i * 4 + 3] = Math.sin(a) * s;
+    initial[base + 4] = r * Math.cos(theta) * s;
+    initial[base + 5] = u * s * 0.4; // dampen vertical so flock doesn't escape altitude band
+    initial[base + 6] = r * Math.sin(theta) * s;
+    initial[base + 7] = 0;
   }
 
   const boidBuffers: GPUBuffer[] = [0, 1].map(() =>
@@ -77,15 +128,36 @@ async function main(): Promise<void> {
   device.queue.writeBuffer(boidBuffers[0], 0, initial);
   device.queue.writeBuffer(boidBuffers[1], 0, initial);
 
-  // Params uniform: 16 floats = 64 bytes (matches WGSL struct layout)
+  // Params uniform layout (matches compute.wgsl `Params`):
+  //   dt           f32  @0
+  //   mouseMode    f32  @4
+  //   _pad0        vec2 @8
+  //   mouse        vec4 @16
+  //   bounds       vec4 @32
+  //   cohesionR..  f32  @48
+  //   separationR  f32  @52
+  //   alignmentR   f32  @56
+  //   maxSpeed     f32  @60
+  //   cohesion     f32  @64
+  //   separation   f32  @68
+  //   alignment    f32  @72
+  //   mouseStr     f32  @76
+  // Total: 80 bytes (multiple of 16).
+  const PARAMS_FLOATS = 20;
   const paramsBuffer = device.createBuffer({
-    size: 64,
+    size: PARAMS_FLOATS * 4,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
-  // View uniform: 4 floats = 16 bytes
+  // View uniform layout (matches render.wgsl `ViewUniform`):
+  //   mvp          mat4 @0  (64 bytes)
+  //   maxSpeed     f32  @64
+  //   time         f32  @68
+  //   _pad0        vec2 @72 (8 bytes)
+  // Total: 80 bytes.
+  const VIEW_FLOATS = 20;
   const viewBuffer = device.createBuffer({
-    size: 16,
+    size: VIEW_FLOATS * 4,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
@@ -132,6 +204,11 @@ async function main(): Promise<void> {
       ],
     },
     primitive: { topology: "triangle-list" },
+    depthStencil: {
+      format: "depth24plus",
+      depthCompare: "less",
+      depthWriteEnabled: true,
+    },
   });
 
   const renderBindGroups: GPUBindGroup[] = [0, 1].map((i) =>
@@ -174,8 +251,8 @@ async function main(): Promise<void> {
   let smoothedFps = 60;
   let fpsUpdateTimer = 0;
 
-  const params = new Float32Array(16);
-  const view = new Float32Array(4);
+  const params = new Float32Array(PARAMS_FLOATS);
+  const view = new Float32Array(VIEW_FLOATS);
 
   const tick = (): void => {
     const now = performance.now();
@@ -192,30 +269,52 @@ async function main(): Promise<void> {
     }
 
     const aspect = canvas.width / canvas.height;
-    // Sim space: x ∈ [-aspect, aspect], y ∈ [-1, 1]. Map pointer NDC.x to sim space.
-    const mouseSimX = pointer.x * aspect;
-    const mouseSimY = pointer.y;
+    const boundsX = SIM_BASE_BOUNDS.x * aspect;
+    const boundsY = SIM_BASE_BOUNDS.y;
+    const boundsZ = SIM_BASE_BOUNDS.z;
 
-    params[0] = dt;
-    params[1] = pointer.mode;
-    params[2] = mouseSimX;
-    params[3] = mouseSimY;
-    params[4] = aspect;
-    params[5] = 1.0;
-    params[6] = SIM.cohesionRadius;
-    params[7] = SIM.separationRadius;
-    params[8] = SIM.alignmentRadius;
-    params[9] = SIM.maxSpeed;
-    params[10] = SIM.cohesion;
-    params[11] = SIM.separation;
-    params[12] = SIM.alignment;
-    params[13] = SIM.mouseStrength;
+    // Map pointer NDC to a 3D point on the y=0 plane. Pragmatic mapping:
+    // x scales with the lateral extent, the y component of NDC drives depth (z),
+    // and the y in sim space stays at 0 (the ground plane the boids float around).
+    const mouseSimX = pointer.x * boundsX;
+    const mouseSimY = 0;
+    const mouseSimZ = -pointer.y * boundsZ;
+
+    let p = 0;
+    params[p++] = dt;
+    params[p++] = pointer.mode;
+    params[p++] = 0;            // _pad0.x
+    params[p++] = 0;            // _pad0.y
+    params[p++] = mouseSimX;    // mouse.x
+    params[p++] = mouseSimY;    // mouse.y
+    params[p++] = mouseSimZ;    // mouse.z
+    params[p++] = 0;            // mouse.w
+    params[p++] = boundsX;      // bounds.x
+    params[p++] = boundsY;      // bounds.y
+    params[p++] = boundsZ;      // bounds.z
+    params[p++] = 0;            // bounds.w
+    params[p++] = SIM.cohesionRadius;
+    params[p++] = SIM.separationRadius;
+    params[p++] = SIM.alignmentRadius;
+    params[p++] = SIM.maxSpeed;
+    params[p++] = SIM.cohesion;
+    params[p++] = SIM.separation;
+    params[p++] = SIM.alignment;
+    params[p++] = SIM.mouseStrength;
     device.queue.writeBuffer(paramsBuffer, 0, params);
 
-    view[0] = aspect;
-    view[1] = SIM.maxSpeed;
-    view[2] = (now - startT) / 1000;
+    // Build perspective + lookAt and write the MVP into the view uniform.
+    const proj = perspective(CAMERA.fovY, aspect, CAMERA.near, CAMERA.far);
+    const viewMat = lookAt(CAMERA.eye, CAMERA.target, CAMERA.up);
+    const mvp = multiply(proj, viewMat);
+    view.set(mvp, 0);
+    view[16] = SIM.maxSpeed;
+    view[17] = (now - startT) / 1000;
+    view[18] = 0;
+    view[19] = 0;
     device.queue.writeBuffer(viewBuffer, 0, view);
+
+    const depth = ensureDepthTexture();
 
     const enc = device.createCommandEncoder();
 
@@ -237,6 +336,12 @@ async function main(): Promise<void> {
             storeOp: "store",
           },
         ],
+        depthStencilAttachment: {
+          view: depth.createView(),
+          depthClearValue: 1.0,
+          depthLoadOp: "clear",
+          depthStoreOp: "store",
+        },
       });
       pass.setPipeline(renderPipeline);
       pass.setBindGroup(0, renderBindGroups[(frame + 1) % 2]);
