@@ -1,13 +1,13 @@
 struct Boid {
-  pos: vec2<f32>,
-  vel: vec2<f32>,
+  pos: vec4<f32>,
+  vel: vec4<f32>,
 }
 
 struct ViewUniform {
-  aspect: f32,
+  mvp: mat4x4<f32>,
   maxSpeed: f32,
   time: f32,
-  _pad: f32,
+  _pad0: vec2<f32>,
 }
 
 @group(0) @binding(0) var<storage, read> boids: array<Boid>;
@@ -19,22 +19,36 @@ struct VSOut {
   @location(1) flap: f32,
 }
 
-// Bird silhouette in local space (forward = +x), drawn as 2 triangles, 6 vertices:
+// Bird silhouette in local space (forward = +z, up = +y), drawn as 2 triangles,
+// 6 vertices:
 //   T1: head -> left-wing-tip -> tail-notch
 //   T2: head -> tail-notch    -> right-wing-tip
-// Wing tips animate to fake a top-down flap.
+// Wing tips animate to fake a flap.
 @vertex
 fn vs_main(
   @builtin(vertex_index) vi: u32,
   @builtin(instance_index) ii: u32,
 ) -> VSOut {
   let b = boids[ii];
-  let speed = length(b.vel);
-  var dir = vec2<f32>(0.0, 1.0);
+  let velXyz = b.vel.xyz;
+  let speed = length(velXyz);
+
+  // Build a world-frame from velocity direction (forward), world up, and cross
+  // products for the perpendicular axes. Fall back to +z if velocity is zero.
+  var forward = vec3<f32>(0.0, 0.0, 1.0);
   if (speed > 0.0001) {
-    dir = b.vel / speed;
+    forward = velXyz / speed;
   }
-  let perp = vec2<f32>(-dir.y, dir.x);
+  let worldUp = vec3<f32>(0.0, 1.0, 0.0);
+  var right = cross(worldUp, forward);
+  let rl = length(right);
+  if (rl < 0.0001) {
+    // forward is parallel to worldUp; pick an arbitrary right.
+    right = vec3<f32>(1.0, 0.0, 0.0);
+  } else {
+    right = right / rl;
+  }
+  let realUp = cross(forward, right);
 
   // Decorrelate flap phase per bird so the flock isn't synchronized.
   let flapRate = 7.0 + speed * 16.0;
@@ -44,25 +58,24 @@ fn vs_main(
   let span = 0.40 + 0.55 * (0.5 + 0.5 * s);
   let sweep = -0.12 * cos(phase);
 
-  let size = 0.016;
-  var local = vec2<f32>(0.0);
+  let size = 0.022;
+  // Local axes: x = right, y = up, z = forward.
+  var local = vec3<f32>(0.0);
   if (vi == 0u || vi == 3u) {
-    local = vec2<f32>(1.00, 0.0);                 // head
+    local = vec3<f32>(0.0, 0.0, 1.00);                  // head
   } else if (vi == 1u) {
-    local = vec2<f32>(-0.55 + sweep,  span);      // left wing tip
+    local = vec3<f32>(-span, 0.0, -0.55 + sweep);       // left wing tip
   } else if (vi == 2u || vi == 4u) {
-    local = vec2<f32>(-0.50, 0.0);                // tail notch
+    local = vec3<f32>(0.0, 0.0, -0.50);                 // tail notch
   } else {
-    local = vec2<f32>(-0.55 + sweep, -span);      // right wing tip
+    local = vec3<f32>(span, 0.0, -0.55 + sweep);        // right wing tip
   }
   local = local * size;
 
-  let world = b.pos + dir * local.x + perp * local.y;
-  // Sim space: x in [-aspect, aspect], y in [-1, 1]. Map to NDC.
-  let ndc = vec2<f32>(world.x / view.aspect, world.y);
+  let world = b.pos.xyz + right * local.x + realUp * local.y + forward * local.z;
 
   var out: VSOut;
-  out.clip = vec4<f32>(ndc, 0.0, 1.0);
+  out.clip = view.mvp * vec4<f32>(world, 1.0);
   out.speed = speed;
   out.flap = s;
   return out;
