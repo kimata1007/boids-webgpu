@@ -107,9 +107,14 @@ async function main(): Promise<void> {
   // PR6 only needs the mesh's normals + indices; the per-frame deformed
   // positions live in the VAT texture, and joints/weights are no longer
   // sampled at runtime.
+  // Asset URLs are resolved against Vite's BASE_URL so the same code works
+  // both in dev (base = "/") and in production on GitHub Pages
+  // (base = "/boids-webgpu/"). BASE_URL always ends with a slash.
+  const assetUrl = (name: string): string => import.meta.env.BASE_URL + name;
+
   let gltf;
   try {
-    gltf = await loadGLB("/flying_bird_static.glb");
+    gltf = await loadGLB(assetUrl("flying_bird_static.glb"));
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     showMessage(`Failed to load flying_bird_static.glb: ${message}`);
@@ -124,12 +129,12 @@ async function main(): Promise<void> {
   let vatMeta: VatMeta;
   let vatBuffer: ArrayBuffer;
   try {
-    const metaResp = await fetch("/flying_bird_vat.json");
+    const metaResp = await fetch(assetUrl("flying_bird_vat.json"));
     if (!metaResp.ok) {
       throw new Error(`HTTP ${metaResp.status} ${metaResp.statusText}`);
     }
     vatMeta = (await metaResp.json()) as VatMeta;
-    const binResp = await fetch("/flying_bird_vat.bin");
+    const binResp = await fetch(assetUrl("flying_bird_vat.bin"));
     if (!binResp.ok) {
       throw new Error(`HTTP ${binResp.status} ${binResp.statusText}`);
     }
