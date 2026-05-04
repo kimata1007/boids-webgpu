@@ -169,17 +169,25 @@ GitHub Pages は配信ソースを 2 通りから選べます:
 
 Actions モードなら専用ブランチを作る必要がなく、ビルド済みファイルを git に含めずに済む。本 PR では Actions モードを使う。
 
-### 概念 6: CC-BY 4.0 をコードに適用する意味
+### 概念 6: デュアルライセンスの構成
 
-CC-BY 4.0 は本来 creative works（写真・音楽・文書）向けに設計されており、ソフトウェアでは MIT/Apache-2.0/BSD 等が一般的です。
+本リポジトリは**コードとアセットで別ライセンス**を採用します。これは標準的な「コードは寛容ライセンス、サードパーティアセットは元のライセンスを保持」パターンです。
 
-それでも **CC-BY 4.0 をコードに適用することは可能**で、以下の効果があります:
+| 対象 | ライセンス | 理由 |
+|------|-----------|------|
+| コード（`src/`, `tools/`, `vite.config.ts`, `index.html` など） | **MIT** | 寛容で再利用しやすい。学習・デモ目的との親和性が高い |
+| 3D アセット（`public/sketchfab/flying_bird.glb` および派生の `flying_bird_static.glb` / `flying_bird_vat.bin`） | **CC-BY 4.0** | 元データが Sketchfab 由来の CC-BY 4.0。再ライセンス不可なので保持義務がある |
 
-- 利用者は **attribution 必須**（コピーする場合、著者名と出典 URL を明記）
-- ライセンス自体に「ソフトウェアには推奨しない」と書かれているが、禁止はされていない
-- アセット (`flying_bird.glb`) と同一ライセンスにすることで管理が単純化される
+利用者目線:
 
-本リポジトリは「学習・デモ目的」のため、利用者にとっての追加負担は許容範囲。**井上さんの指示**でモデルと統一することにしました。
+| 行為 | コード再利用 (MIT) | モデル再利用 (CC-BY 4.0) |
+|------|------------------|---------------------|
+| 商用利用 | ✅ 可（無条件） | ✅ 可（条件あり） |
+| 改変 | ✅ 可（無条件） | ✅ 可（改変明記必須） |
+| 再配布 | ✅ 可（LICENSE 同梱） | ✅ 可（attribution 必須） |
+| 表示義務 | LICENSE ファイルの同梱のみ | 著者・URL・ライセンス・改変有無を明記 |
+
+`LICENSE` ファイルは MIT 本文を主体とし、末尾に **Third-Party Assets** 節を追加して CC-BY 4.0 の対象範囲・著者・改変内容を明記します。
 
 ## 実装ステップ
 
@@ -187,45 +195,54 @@ CC-BY 4.0 は本来 creative works（写真・音楽・文書）向けに設計�
 
 **変更ファイル**: `LICENSE`（新規）
 
-CC-BY 4.0 の公式全文を貼り付けます:
+MIT License の公式テンプレートを主体とし、末尾に Third-Party Assets 節を追加:
 
 ```
-Attribution 4.0 International
-=======================================================================
+MIT License
 
-(以下、https://creativecommons.org/licenses/by/4.0/legalcode.txt の本文)
-```
-
-冒頭にプロジェクトの著作権表記を追加:
-
-```
 Copyright (c) 2026 Jundai Inoue (kimata1007)
 
-This work, including both source code and bundled 3D assets, is licensed
-under the Creative Commons Attribution 4.0 International License (CC-BY 4.0).
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction ...
 
-Bundled assets:
-- "Flying Bird" by sandeep.s (Sketchfab) — CC-BY 4.0
-  https://sketchfab.com/3d-models/flying-bird-eb843194e06d429ebef7dd4aa7e265c1
+(MIT 全文)
+
+==========================================================================
+Third-Party Assets
+==========================================================================
+
+The following bundled assets are licensed separately and are NOT covered by
+the MIT License above:
+
+"Flying Bird" by sandeep.s
+- Source: https://sketchfab.com/3d-models/flying-bird-eb843194e06d429ebef7dd4aa7e265c1
+- License: Creative Commons Attribution 4.0 International (CC-BY 4.0)
+  https://creativecommons.org/licenses/by/4.0/
+- Files: public/sketchfab/flying_bird.glb (verbatim copy)
+         public/flying_bird_static.glb (modified: joined into single mesh)
+         public/flying_bird_vat.bin (modified: vertex positions baked per
+         frame into a Vertex Animation Texture)
+- Modifications are performed by tools/bake_flying_bird.py.
 ```
 
 ### Step 2: README のライセンス節を更新
 
 **変更ファイル**: `README.md`
 
-「未定」→ CC-BY 4.0 に書き換え:
+「未定」→ デュアルライセンスに書き換え:
 
 ```markdown
 ## ライセンス
 
-このプロジェクトは [Creative Commons Attribution 4.0 International (CC-BY 4.0)](./LICENSE) で公開しています。
-コード・3D アセット共に同ライセンスです。
+このプロジェクトは **デュアルライセンス**で公開しています。
 
-利用される場合は以下を表示してください:
-- 著者名: Jundai Inoue (kimata1007), sandeep.s (3D モデル)
-- 出典 URL: https://github.com/kimata1007/boids-webgpu
-- ライセンス: CC-BY 4.0
-- 改変有無: 改変している場合はその旨
+| 対象 | ライセンス |
+|------|-----------|
+| コード（`src/`, `tools/`, 設定ファイル等） | [MIT License](./LICENSE) |
+| 3D モデル（`public/sketchfab/flying_bird.glb` および派生の `flying_bird_static.glb` / `flying_bird_vat.bin`） | [CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/) (sandeep.s, [Sketchfab](https://sketchfab.com/3d-models/flying-bird-eb843194e06d429ebef7dd4aa7e265c1)) |
+
+コードは MIT として自由に再利用可能です。3D モデルを再利用する場合は、原著者 sandeep.s への attribution（CC-BY 4.0 の表示義務）が必要です。
 
 詳細は [LICENSE](./LICENSE) を参照してください。
 ```
@@ -342,28 +359,61 @@ npx vite preview
 
 実装完了後にコミット, push, `gh pr create` で PR を起こす。
 
-### Step 8: リポジトリ公開（井上さん側で実施）
+### Step 8: リポジトリ作り直し（井上さん側で実施）
 
-**ここから先は不可逆操作なので私からは実行しない**。井上さんに以下を実施してもらう:
+公開前に **PR の試行錯誤履歴を消したい**という方針なので、リポジトリを一度削除して再作成します。**不可逆操作なので私からは実行せず**、井上さんに依頼する手順を以下にまとめます。
+
+事前準備（私側で実施済みの状態）:
+- `feat/github-pages` ブランチに PR-08 の実装が乗っている
+- PR を立ててマージする
+- main が最終状態になっていることを確認
 
 ```bash
-# 1. リポジトリを public に変更
-gh repo edit kimata1007/boids-webgpu \
-  --visibility public \
-  --accept-visibility-change-consequences
+# 0. ローカル main が最新か確認
+git checkout main
+git pull origin main
+git log --oneline | head -5
 
-# 2. Pages を有効化（または GitHub UI で）
+# 1. (任意) ローカルにフルバックアップを取る
+cp -r ~/Desktop/dev/boids-webgpu ~/Desktop/dev/boids-webgpu-backup-$(date +%Y%m%d)
+
+# 2. リモートリポジトリを削除
+gh repo delete kimata1007/boids-webgpu --yes
+
+# 3. すぐ同名で再作成 (public)
+gh repo create kimata1007/boids-webgpu --public \
+  --description "WebGPU Boids群衆シミュレーション (8000体・スケルタルアニメ・VAT最適化)"
+
+# 4. ローカル main を整理してから force push
+#    (1) 履歴を残す場合: そのまま push
+git remote set-url origin https://github.com/kimata1007/boids-webgpu.git
+git push -u origin main
+
+#    (2) 単一コミットに圧縮する場合: ルートを作り直して force push
+#    git checkout --orphan clean-main
+#    git add -A
+#    git commit -m "feat: initial public release"
+#    git branch -M clean-main main
+#    git push -f origin main
+
+# 5. Pages を Actions モードで有効化
 gh api -X POST repos/kimata1007/boids-webgpu/pages \
   -f build_type=workflow
 
-# 3. main への push を待つ → Actions が走る → Pages にデプロイ
-gh run watch  # または GitHub UI の Actions タブで確認
+# 6. main への push をトリガに Actions が走る
+gh run watch
 
-# 4. 公開 URL でアクセス確認
+# 7. 公開 URL でアクセス確認
 open https://kimata1007.github.io/boids-webgpu/
 ```
 
-> ⚠️ public 化すると履歴・PR・Issue が全世界公開になります。一度公開したものは、その間に fork された分は private に戻しても回収できません
+> ⚠️ **削除と再作成の間（数秒〜数分）**、`kimata1007/boids-webgpu` の名前は誰でも取れる空き状態になります。`gh repo delete` と `gh repo create` を**続けて実行**してください
+
+> ⚠️ Step 4 の (1) と (2) はトレードオフ:
+> - **(1) 履歴保持**: PR-07 設計書の Lessons Learned や VAT 修正コミットの根拠が読める
+> - **(2) 単一コミット**: 完全に綺麗な状態。学習過程は失われる
+> 
+> 公開後の portfolio として「動くもの一発」を見せたいなら (2)、「学習プロセスも見せたい」なら (1)
 
 ## 検証方法
 

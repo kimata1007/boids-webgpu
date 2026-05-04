@@ -148,7 +148,17 @@ gitGraph
 
 ## ライセンス
 
-未定（公開時に決定）。3D モデル部分は CC-BY 4.0 に従って表示します。
+このプロジェクトは **デュアルライセンス**で公開しています。
+
+| 対象 | ライセンス |
+|------|-----------|
+| コード（`src/`, `tools/`, 設定ファイル等） | [MIT License](./LICENSE) |
+| 3D モデル（`public/sketchfab/flying_bird.glb` および派生の `flying_bird_static.glb` / `flying_bird_vat.bin`） | [CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/) (sandeep.s) |
+
+- **コードの再利用**: MIT として自由に可能。LICENSE ファイルの同梱で OK
+- **3D モデルの再利用**: CC-BY 4.0 の attribution（著者・URL・ライセンス・改変有無の表示）が必要
+
+詳細は [LICENSE](./LICENSE) を参照してください。
 
 ## 著者
 
