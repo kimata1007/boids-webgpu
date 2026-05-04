@@ -1,0 +1,13 @@
+{
+  "numFrames": 32,
+  "vertexCount": 529,
+  "format": "rgba16f",
+  "duration": 10.375,
+  "source": {
+    "name": "Flying Bird",
+    "author": "sandeep.s",
+    "license": "CC-BY 4.0",
+    "url": "https://sketchfab.com/3d-models/flying-bird-eb843194e06d429ebef7dd4aa7e265c1"
+  },
+  "sourceVertexCount": 501
+}

@@ -109,10 +109,10 @@ async function main(): Promise<void> {
   // sampled at runtime.
   let gltf;
   try {
-    gltf = await loadGLB("/pigeon.glb");
+    gltf = await loadGLB("/flying_bird_static.glb");
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    showMessage(`Failed to load pigeon.glb: ${message}`);
+    showMessage(`Failed to load flying_bird_static.glb: ${message}`);
     console.error(error);
     return;
   }
@@ -124,12 +124,12 @@ async function main(): Promise<void> {
   let vatMeta: VatMeta;
   let vatBuffer: ArrayBuffer;
   try {
-    const metaResp = await fetch("/pigeon_vat.json");
+    const metaResp = await fetch("/flying_bird_vat.json");
     if (!metaResp.ok) {
       throw new Error(`HTTP ${metaResp.status} ${metaResp.statusText}`);
     }
     vatMeta = (await metaResp.json()) as VatMeta;
-    const binResp = await fetch("/pigeon_vat.bin");
+    const binResp = await fetch("/flying_bird_vat.bin");
     if (!binResp.ok) {
       throw new Error(`HTTP ${binResp.status} ${binResp.statusText}`);
     }

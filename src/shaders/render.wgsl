@@ -31,10 +31,10 @@ struct VSOut {
   @location(1) speed: f32,
 }
 
-// Pigeon model is authored in glTF units (~1.6m tall). The boid sim
-// volume has half-extents of order ~1, so we shrink the model so 8000
-// pigeons fit comfortably inside the view.
-const PIGEON_SCALE: f32 = 0.04;
+// The Sketchfab "Flying Bird" model spans ~45 units (Maya default unit).
+// The boid sim volume has half-extents of order ~1, so we shrink hard so
+// 8000 birds fit comfortably inside the view.
+const BIRD_SCALE: f32 = 0.001;
 
 @vertex
 fn vs_main(
@@ -81,9 +81,9 @@ fn vs_main(
   // Our world frame uses (right, realUp, forward), so we swap accordingly.
   let world =
     b.pos.xyz +
-    forward * (localPos.x * PIGEON_SCALE) +
-    right   * (localPos.y * PIGEON_SCALE) +
-    realUp  * (localPos.z * PIGEON_SCALE);
+    forward * (localPos.x * BIRD_SCALE) +
+    right   * (localPos.y * BIRD_SCALE) +
+    realUp  * (localPos.z * BIRD_SCALE);
 
   // Rotate the bind-pose normal into the same per-instance frame.
   let nWorld =

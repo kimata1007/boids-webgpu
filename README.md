@@ -1,6 +1,6 @@
 # boids-webgpu
 
-WebGPU の compute shader を使った 3D Boids（群行動）シミュレーション。**8000 羽のハト**が群行動則に従って飛び、各個体がスケルタルアニメで羽ばたきます。
+WebGPU の compute shader を使った 3D Boids（群行動）シミュレーション。**8000 羽の鳥**が群行動則に従って飛び、各個体が独立した位相で羽ばたきます。3D モデルには Sketchfab の CC-BY モデル ["Flying Bird" by sandeep.s](https://sketchfab.com/3d-models/flying-bird-eb843194e06d429ebef7dd4aa7e265c1) を使用しています。
 
 ブラウザだけで動きます。WebGL ではなく **WebGPU** を選ぶことで、群れの近傍探索を GPU の並列計算で素直に書けるようにしています。
 
@@ -34,15 +34,16 @@ npm run dev
 
 `http://localhost:5173/` を開きます。
 
-### ハトのモデルを再生成する場合
+### VAT を再生成する場合
 
-通常は `public/pigeon.glb` と `public/pigeon_vat.bin` がリポジトリに同梱されているので不要ですが、Blender スクリプトを書き換えた場合は再生成します。
+通常は `public/flying_bird_static.glb` と `public/flying_bird_vat.bin` がリポジトリに同梱されているので不要です。Sketchfab モデルや Blender スクリプトを差し替えた場合のみ実行してください。
 
 ```bash
 # Blender 5.x が必要 (macOS では brew install --cask blender)
-/Applications/Blender.app/Contents/MacOS/Blender --background --python tools/make_pigeon.py
-/Applications/Blender.app/Contents/MacOS/Blender --background --python tools/bake_vat.py
+/Applications/Blender.app/Contents/MacOS/Blender --background --python tools/bake_flying_bird.py
 ```
+
+> 学習用に残してある自家製プリミティブ・ハト生成スクリプト (`tools/make_pigeon.py`) と汎用 VAT 焼き出し (`tools/bake_vat.py`) もあります。これらは現在使われていませんが、PR1〜5 段階の追体験用に保持しています。
 
 ## プロジェクト構成
 
@@ -50,9 +51,10 @@ npm run dev
 boids-webgpu/
 ├── docs/                     設計書（WebGPU 入門 + PR ごとの解説）
 ├── public/
-│   ├── pigeon.glb            ハトの 3D モデル（リグ + 羽ばたきアニメ付き）
-│   ├── pigeon_vat.bin        Vertex Animation Texture (32 フレーム × 752 頂点)
-│   └── pigeon_vat.json       VAT メタデータ
+│   ├── flying_bird_static.glb  Sketchfab由来の鳥モデル(3メッシュ統合済み・静的)
+│   ├── flying_bird_vat.bin     Vertex Animation Texture (32フレーム × 529頂点)
+│   ├── flying_bird_vat.json    VAT メタデータ
+│   └── sketchfab/              元データ(Sketchfabからダウンロードした.glb)
 ├── src/
 │   ├── gltf/loader.ts        ゼロ依存の GLB パーサ
 │   ├── lib/mat4.ts           自前の 4×4 行列ヘルパー
@@ -60,7 +62,8 @@ boids-webgpu/
 │   ├── shaders/render.wgsl   VAT サンプル + Lambert 照明
 │   └── main.ts               初期化 〜 メインループ
 └── tools/
-    ├── make_pigeon.py        Blender でハトを生成するスクリプト
+    ├── make_pigeon.py        (学習用・現状未使用) 自家製プリミティブハト生成
+    ├── bake_flying_bird.py   Sketchfab鳥モデル → 統合 + VAT焼き出し
     ├── bake_vat.py           アニメーションを VAT に焼き出すスクリプト
     └── inspect_glb.py        GLB の中身を検証するツール
 ```
@@ -135,9 +138,17 @@ gitGraph
 - **段階的構築** — 6 本の PR に分割し、各段階で動くものを保つ。スキニング → アニメ → VAT と進化する設計
 - **VAT による群衆最適化** — ランタイムでスキニング計算をせず、テクスチャ参照で済ませる。8000 体描画でも GPU 帯域がほぼ消費されない
 
+## クレジット
+
+3D モデル:
+- **"Flying Bird"** by [sandeep.s](https://sketchfab.com/sandeep.s) — Sketchfab
+- 元 URL: https://sketchfab.com/3d-models/flying-bird-eb843194e06d429ebef7dd4aa7e265c1
+- ライセンス: [Creative Commons Attribution 4.0 International (CC-BY 4.0)](https://creativecommons.org/licenses/by/4.0/)
+- 改変: 本プロジェクトでは Blender で 3 メッシュを統合し、各フレームの頂点位置を Vertex Animation Texture (rgba16f) に焼き出して使用しています
+
 ## ライセンス
 
-未定（公開時に決定）。
+未定（公開時に決定）。3D モデル部分は CC-BY 4.0 に従って表示します。
 
 ## 著者
 
