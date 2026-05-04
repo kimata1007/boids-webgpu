@@ -1,9 +1,7 @@
 import computeWGSL from "./shaders/compute.wgsl?raw";
 import renderWGSL from "./shaders/render.wgsl?raw";
-import { identity, lookAt, multiply, perspective } from "./lib/mat4";
+import { lookAt, multiply, perspective } from "./lib/mat4";
 import { loadGLB } from "./gltf/loader";
-import { computeSkinningMatrices } from "./skin/skeleton";
-import { applyAnimation } from "./animation/sampler";
 
 const NUM_BOIDS = 8000;
 
@@ -36,10 +34,12 @@ const CAMERA = {
   far: 50,
 };
 
-// PR3 model placement: the bind-pose pigeon is roughly 1.6m tall in glTF
-// units, which is way too big for the existing camera framing. Scale it
-// down so the body sits comfortably inside the view.
-const PIGEON_MODEL_SCALE = 0.5;
+interface VatMeta {
+  numFrames: number;
+  vertexCount: number;
+  format: string;
+  duration: number;
+}
 
 function showMessage(text: string): void {
   const msg = document.getElementById("msg");
@@ -104,6 +104,9 @@ async function main(): Promise<void> {
   window.addEventListener("resize", resize);
 
   // Load the static glTF mesh up front so we can size GPU buffers correctly.
+  // PR6 only needs the mesh's normals + indices; the per-frame deformed
+  // positions live in the VAT texture, and joints/weights are no longer
+  // sampled at runtime.
   let gltf;
   try {
     gltf = await loadGLB("/pigeon.glb");
@@ -114,53 +117,43 @@ async function main(): Promise<void> {
     return;
   }
   const mesh = gltf.mesh;
-  const skeleton = gltf.skeleton;
-  if (!skeleton) {
-    showMessage("pigeon.glb is missing a skin; PR4 needs joints.");
-    return;
-  }
-  // PR5 requires at least one baked animation. Without it the pigeon would
-  // freeze in the bind pose; surface that as an explicit user-facing error
-  // rather than silently shipping a static render.
-  if (gltf.animations.length === 0) {
-    showMessage("pigeon.glb has no animations; PR5 needs at least one.");
-    return;
-  }
-  const anim = gltf.animations[0];
 
-  // PR4 packs joints as uint8x4 in the vertex buffer. The loader can also
-  // return Uint16Array for files that index >255 joints, but that path is not
-  // wired through this pipeline yet. Fail loudly so the next maintainer
-  // notices instead of silently dropping the high byte.
-  // TODO: PR future — support uint16 joint indices end-to-end.
-  if (!(mesh.joints instanceof Uint8Array)) {
+  // Load the baked Vertex Animation Texture. The .json sidecar carries
+  // numFrames / vertexCount / duration so the runtime never has to
+  // hardcode values that the bake script chose.
+  let vatMeta: VatMeta;
+  let vatBuffer: ArrayBuffer;
+  try {
+    const metaResp = await fetch("/pigeon_vat.json");
+    if (!metaResp.ok) {
+      throw new Error(`HTTP ${metaResp.status} ${metaResp.statusText}`);
+    }
+    vatMeta = (await metaResp.json()) as VatMeta;
+    const binResp = await fetch("/pigeon_vat.bin");
+    if (!binResp.ok) {
+      throw new Error(`HTTP ${binResp.status} ${binResp.statusText}`);
+    }
+    vatBuffer = await binResp.arrayBuffer();
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    showMessage(`Failed to load VAT: ${message}`);
+    console.error(error);
+    return;
+  }
+
+  if (vatMeta.vertexCount !== mesh.vertexCount) {
     showMessage(
-      "pigeon.glb uses uint16 joint indices; PR4 only handles uint8x4.",
+      `VAT vertexCount ${vatMeta.vertexCount} disagrees with glTF mesh ` +
+        `vertexCount ${mesh.vertexCount}; rebake with tools/bake_vat.py`,
     );
     return;
   }
-
-  // Defensive normalization. Most exporters produce weights that sum to 1,
-  // but auto-weight rigs occasionally leave tiny rounding error or zeros on
-  // every channel. A zero sum collapses the vertex to the origin during
-  // blending, so when that happens we fall back to "fully bound to joint 0".
-  const normalizedWeights = new Float32Array(mesh.weights.length);
-  for (let v = 0; v < mesh.vertexCount; v++) {
-    const base = v * 4;
-    const sum =
-      mesh.weights[base + 0] +
-      mesh.weights[base + 1] +
-      mesh.weights[base + 2] +
-      mesh.weights[base + 3];
-    if (sum > 1e-6) {
-      const inv = 1 / sum;
-      normalizedWeights[base + 0] = mesh.weights[base + 0] * inv;
-      normalizedWeights[base + 1] = mesh.weights[base + 1] * inv;
-      normalizedWeights[base + 2] = mesh.weights[base + 2] * inv;
-      normalizedWeights[base + 3] = mesh.weights[base + 3] * inv;
-    } else {
-      normalizedWeights[base + 0] = 1;
-    }
+  const expectedVatBytes = vatMeta.numFrames * vatMeta.vertexCount * 8;
+  if (vatBuffer.byteLength !== expectedVatBytes) {
+    showMessage(
+      `VAT bin is ${vatBuffer.byteLength} bytes; expected ${expectedVatBytes}`,
+    );
+    return;
   }
 
   // Each boid: vec4 pos + vec4 vel = 8 floats = 32 bytes.
@@ -187,6 +180,9 @@ async function main(): Promise<void> {
     initial[base + 7] = 0;
   }
 
+  // Boid storage uses STORAGE | COPY_DST for the compute pass plus the
+  // render pass binding. Two ping-pong buffers swap each frame so the
+  // compute shader can read from one while writing to the other.
   const boidBuffers: GPUBuffer[] = [0, 1].map(() =>
     device.createBuffer({
       size: boidByteSize,
@@ -196,42 +192,17 @@ async function main(): Promise<void> {
   device.queue.writeBuffer(boidBuffers[0], 0, initial);
   device.queue.writeBuffer(boidBuffers[1], 0, initial);
 
-  // Vertex buffer layout (PR4): 48 bytes / vertex, interleaved.
-  //   position vec3<f32> @ 0   (12 bytes)
-  //   normal   vec3<f32> @ 12  (12 bytes)
-  //   joints   u8x4      @ 24  (4 bytes)
-  //   _pad0              @ 28  (4 bytes — keep weights aligned to 16)
-  //   weights  vec4<f32> @ 32  (16 bytes)
-  //
-  // We build the buffer through one ArrayBuffer with two views (Float32 for
-  // floats, Uint8 for joint indices) so the typed-byte layout is exact.
-  const VERTEX_STRIDE_BYTES = 48;
+  // Vertex buffer (PR6): normal-only, 12 bytes / vertex. The bind-pose
+  // normal is approximated as constant across the flap; positions are
+  // supplied by the VAT lookup at vertex_index.
+  const VERTEX_STRIDE_BYTES = 12;
   const vertexByteSize = mesh.vertexCount * VERTEX_STRIDE_BYTES;
   const interleavedBuffer = new ArrayBuffer(vertexByteSize);
   const interleavedF32 = new Float32Array(interleavedBuffer);
-  const interleavedU8 = new Uint8Array(interleavedBuffer);
-  const FLOATS_PER_STRIDE = VERTEX_STRIDE_BYTES / 4;
   for (let i = 0; i < mesh.vertexCount; i++) {
-    const fdst = i * FLOATS_PER_STRIDE;
-    const u8dst = i * VERTEX_STRIDE_BYTES;
-    // position
-    interleavedF32[fdst + 0] = mesh.positions[i * 3 + 0];
-    interleavedF32[fdst + 1] = mesh.positions[i * 3 + 1];
-    interleavedF32[fdst + 2] = mesh.positions[i * 3 + 2];
-    // normal
-    interleavedF32[fdst + 3] = mesh.normals[i * 3 + 0];
-    interleavedF32[fdst + 4] = mesh.normals[i * 3 + 1];
-    interleavedF32[fdst + 5] = mesh.normals[i * 3 + 2];
-    // joints (uint8x4) at byte offset 24
-    interleavedU8[u8dst + 24] = mesh.joints[i * 4 + 0];
-    interleavedU8[u8dst + 25] = mesh.joints[i * 4 + 1];
-    interleavedU8[u8dst + 26] = mesh.joints[i * 4 + 2];
-    interleavedU8[u8dst + 27] = mesh.joints[i * 4 + 3];
-    // weights at float offset 8 (= byte offset 32)
-    interleavedF32[fdst + 8] = normalizedWeights[i * 4 + 0];
-    interleavedF32[fdst + 9] = normalizedWeights[i * 4 + 1];
-    interleavedF32[fdst + 10] = normalizedWeights[i * 4 + 2];
-    interleavedF32[fdst + 11] = normalizedWeights[i * 4 + 3];
+    interleavedF32[i * 3 + 0] = mesh.normals[i * 3 + 0];
+    interleavedF32[i * 3 + 1] = mesh.normals[i * 3 + 1];
+    interleavedF32[i * 3 + 2] = mesh.normals[i * 3 + 2];
   }
   const vertexBuffer = device.createBuffer({
     size: vertexByteSize,
@@ -249,6 +220,23 @@ async function main(): Promise<void> {
     usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
   });
   device.queue.writeBuffer(indexBuffer, 0, mesh.indices);
+
+  // VAT texture: rgba16float, [vertexCount, numFrames].
+  const vatTexture = device.createTexture({
+    size: [vatMeta.vertexCount, vatMeta.numFrames, 1],
+    format: "rgba16float",
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  });
+  device.queue.writeTexture(
+    { texture: vatTexture },
+    new Uint8Array(vatBuffer),
+    { bytesPerRow: vatMeta.vertexCount * 8 },
+    {
+      width: vatMeta.vertexCount,
+      height: vatMeta.numFrames,
+      depthOrArrayLayers: 1,
+    },
+  );
 
   // Params uniform layout (matches compute.wgsl `Params`):
   //   dt           f32  @0
@@ -273,12 +261,12 @@ async function main(): Promise<void> {
 
   // View uniform layout (matches render.wgsl `ViewUniform`):
   //   mvp          mat4 @0    (64 bytes)
-  //   model        mat4 @64   (64 bytes)
-  //   maxSpeed     f32  @128
-  //   time         f32  @132
-  //   _pad0        vec2 @136  (8 bytes)
-  // Total: 144 bytes (16-byte aligned).
-  const VIEW_FLOATS = 36;
+  //   maxSpeed     f32  @64
+  //   time         f32  @68
+  //   numFrames    f32  @72
+  //   duration     f32  @76
+  // Total: 80 bytes (16-byte aligned).
+  const VIEW_FLOATS = 20;
   const viewBuffer = device.createBuffer({
     size: VIEW_FLOATS * 4,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -301,15 +289,6 @@ async function main(): Promise<void> {
     }),
   );
 
-  // Joint matrix Storage Buffer: one mat4x4<f32> per joint (64 bytes each).
-  // Updated every frame from the CPU once we know the slider angle.
-  const jointCount = skeleton.joints.length;
-  const jointBuffer = device.createBuffer({
-    size: jointCount * 64,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
-  const skinningScratch = new Float32Array(jointCount * 16);
-
   const renderModule = device.createShaderModule({ code: renderWGSL });
   const renderPipeline = device.createRenderPipeline({
     layout: "auto",
@@ -321,9 +300,6 @@ async function main(): Promise<void> {
           arrayStride: VERTEX_STRIDE_BYTES,
           attributes: [
             { shaderLocation: 0, offset: 0, format: "float32x3" },
-            { shaderLocation: 1, offset: 12, format: "float32x3" },
-            { shaderLocation: 2, offset: 24, format: "uint8x4" },
-            { shaderLocation: 3, offset: 32, format: "float32x4" },
           ],
         },
       ],
@@ -345,13 +321,23 @@ async function main(): Promise<void> {
     },
   });
 
-  const renderBindGroup = device.createBindGroup({
-    layout: renderPipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: { buffer: viewBuffer } },
-      { binding: 1, resource: { buffer: jointBuffer } },
-    ],
-  });
+  // Render bind group is rebuilt each frame because the boid storage
+  // buffer ping-pongs between the two ping-pong slots; the just-written
+  // buffer (the compute pass's output) is the one we want to read this
+  // frame.
+  const makeRenderBindGroup = (boidBuf: GPUBuffer): GPUBindGroup =>
+    device.createBindGroup({
+      layout: renderPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: viewBuffer } },
+        { binding: 1, resource: { buffer: boidBuf } },
+        { binding: 2, resource: vatTexture.createView() },
+      ],
+    });
+  const renderBindGroups: GPUBindGroup[] = [
+    makeRenderBindGroup(boidBuffers[0]),
+    makeRenderBindGroup(boidBuffers[1]),
+  ];
 
   // Mouse / pointer state, in canvas-space NDC ([-1, 1])
   const pointer = { x: 0, y: 0, mode: 0 as -1 | 0 | 1 };
@@ -373,9 +359,8 @@ async function main(): Promise<void> {
   canvas.addEventListener("pointercancel", () => { pointer.mode = 0; });
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
-  // PR5: pause/play toggle. The animation is driven by `animElapsed`, which
-  // accumulates only while `paused === false`. We never freeze the boid sim
-  // or the framerate counter — only the pigeon's flap clock.
+  // Pause toggle: freezes both the boid sim (by zeroing dt) and the VAT
+  // animation phase clock so the flock holds its current pose.
   let paused = false;
   const pauseButton = document.getElementById("pause") as HTMLButtonElement | null;
   const PAUSE_LABEL_PLAYING = "⏸ Pause";
@@ -391,9 +376,7 @@ async function main(): Promise<void> {
   }
 
   const countEl = document.getElementById("count");
-  // The HUD count was tied to the procedural boid render. PR3 draws one
-  // pigeon, so override the figure to make the HUD honest.
-  if (countEl) countEl.textContent = "1";
+  if (countEl) countEl.textContent = String(NUM_BOIDS);
   const fpsEl = document.getElementById("fps");
 
   let frame = 0;
@@ -401,28 +384,31 @@ async function main(): Promise<void> {
   let lastT = startT;
   let smoothedFps = 60;
   let fpsUpdateTimer = 0;
-  // PR5: animation playback clock. Advances by `dt` each frame *unless* the
-  // user has paused; that way the flap loop freezes mid-cycle instead of
-  // snapping back to the start when paused.
+  // Time fed to the VAT lookup. Advances by `dt` each unpaused frame so
+  // the flap loop continues smoothly across pauses.
   let animElapsed = 0;
 
   const params = new Float32Array(PARAMS_FLOATS);
   const view = new Float32Array(VIEW_FLOATS);
-  const modelMat = makeUniformScaleMatrix(PIGEON_MODEL_SCALE);
   const indexCount = mesh.indices.length;
 
   const tick = (): void => {
     const now = performance.now();
-    let dt = (now - lastT) / 1000;
+    let dtRaw = (now - lastT) / 1000;
     lastT = now;
     // Clamp to avoid blow-up on tab switch
-    if (dt > 0.05) dt = 0.05;
+    if (dtRaw > 0.05) dtRaw = 0.05;
+    const dt = paused ? 0 : dtRaw;
 
-    smoothedFps = smoothedFps * 0.92 + (1 / Math.max(dt, 1e-4)) * 0.08;
-    fpsUpdateTimer += dt;
+    smoothedFps = smoothedFps * 0.92 + (1 / Math.max(dtRaw, 1e-4)) * 0.08;
+    fpsUpdateTimer += dtRaw;
     if (fpsUpdateTimer >= 0.25 && fpsEl) {
       fpsEl.textContent = smoothedFps.toFixed(0);
       fpsUpdateTimer = 0;
+    }
+
+    if (!paused) {
+      animElapsed += dtRaw;
     }
 
     const aspect = canvas.width / canvas.height;
@@ -465,32 +451,24 @@ async function main(): Promise<void> {
     const viewMat = lookAt(CAMERA.eye, CAMERA.target, CAMERA.up);
     const mvp = multiply(proj, viewMat);
     view.set(mvp, 0);
-    view.set(modelMat, 16);
-    view[32] = SIM.maxSpeed;
-    view[33] = (now - startT) / 1000;
-    view[34] = 0;
-    view[35] = 0;
+    view[16] = SIM.maxSpeed;
+    view[17] = animElapsed;
+    view[18] = vatMeta.numFrames;
+    view[19] = vatMeta.duration;
     device.queue.writeBuffer(viewBuffer, 0, view);
-
-    // PR5: drive the flap from the baked glTF animation. `applyAnimation`
-    // mutates the joints' TRS in place; `computeSkinningMatrices` then reads
-    // those values when composing each joint's local matrix, so the GPU sees
-    // a fresh set of skinning matrices every frame.
-    if (!paused) {
-      animElapsed += dt;
-    }
-    applyAnimation(skeleton, anim, animElapsed);
-    computeSkinningMatrices(skeleton, skinningScratch);
-    device.queue.writeBuffer(jointBuffer, 0, skinningScratch);
 
     const depth = ensureDepthTexture();
 
     const enc = device.createCommandEncoder();
 
+    // Compute pass writes into boidBuffers[1 - (frame % 2)].
+    const computeReadIdx = frame % 2;
+    const computeWriteIdx = 1 - computeReadIdx;
+
     {
       const pass = enc.beginComputePass();
       pass.setPipeline(computePipeline);
-      pass.setBindGroup(0, computeBindGroups[frame % 2]);
+      pass.setBindGroup(0, computeBindGroups[computeReadIdx]);
       pass.dispatchWorkgroups(Math.ceil(NUM_BOIDS / 64));
       pass.end();
     }
@@ -513,11 +491,11 @@ async function main(): Promise<void> {
         },
       });
       pass.setPipeline(renderPipeline);
-      pass.setBindGroup(0, renderBindGroup);
+      // Render reads the buffer the compute pass just wrote.
+      pass.setBindGroup(0, renderBindGroups[computeWriteIdx]);
       pass.setVertexBuffer(0, vertexBuffer);
       pass.setIndexBuffer(indexBuffer, indexFormat);
-      // PR3: a single static pigeon. PR6 will reintroduce instancing.
-      pass.drawIndexed(indexCount, 1, 0, 0, 0);
+      pass.drawIndexed(indexCount, NUM_BOIDS, 0, 0, 0);
       pass.end();
     }
 
@@ -528,15 +506,6 @@ async function main(): Promise<void> {
   };
 
   requestAnimationFrame(tick);
-}
-
-// Build a column-major 4x4 with uniform scale on the diagonal.
-function makeUniformScaleMatrix(s: number): Float32Array {
-  const m = identity();
-  m[0] = s;
-  m[5] = s;
-  m[10] = s;
-  return m;
 }
 
 function roundUpToMultipleOf(value: number, multiple: number): number {
