@@ -1,6 +1,6 @@
 # 02. ロードマップ
 
-> このページの目標: 「現在 → 最終形」までの距離を 6 本の PR に分割し、各 PR で何を学べばいいかを把握すること。
+> このページの目標: 「現在 → 最終形」までの距離を 6 本のコア PR + 拡張 PR に分割し、各 PR で何を学べばいいかを把握すること。
 
 ## 現在地と目的地
 
@@ -13,7 +13,7 @@
 8000 体（fps 60）                     →  8000 体（fps 60 を維持）
 ```
 
-## 6 本の PR
+## コア PR（PR1〜PR6）
 
 ```mermaid
 gitGraph
@@ -24,7 +24,9 @@ gitGraph
     commit id: "PR4: スキニング"
     commit id: "PR5: アニメ再生"
     commit id: "PR6: VAT 化"
-    commit id: "FINAL: 8000ハトの群れ" type: HIGHLIGHT
+    commit id: "MILESTONE: 8000体" type: HIGHLIGHT
+    commit id: "PR7: Sketchfab鳥に置換"
+    commit id: "PR8: GitHub Pages公開"
 ```
 
 ### 一覧表
@@ -37,8 +39,12 @@ gitGraph
 | 4 | [スキニング](./pr/PR-04-skinning.md) | ボーン行列で頂点を変形 | `render.wgsl`, `main.ts` | ★★★★ |
 | 5 | [アニメーション再生](./pr/PR-05-animation.md) | 時間に沿ってボーン行列を更新 | `src/animation/`, `main.ts` | ★★★ |
 | 6 | [VAT で 8000 体](./pr/PR-06-vat.md) | アニメをテクスチャに焼き、ランタイム軽量化 | `tools/bake_vat.py`, `render.wgsl` | ★★★★ |
+| 7 | [Sketchfab 鳥への置換](./pr/PR-07-sketchfab-bird.md) | 自家製ハトを Sketchfab の CC-BY モデルに置換 | `tools/bake_flying_bird.py`（新規）, `src/shaders/render.wgsl`, `src/gltf/loader.ts` | ★★★ |
+| 8 | [GitHub Pages 公開](./pr/PR-08-github-pages.md) | サブパス対応、Actions ワークフロー、ライセンス整備 | `vite.config.ts`, `.github/workflows/deploy.yml`, `LICENSE` | ★★ |
 
 > ⭐ `★` = 1 時間で読める。`★★★★` = 1 日かかる。だいたいの目安です
+
+PR7・PR8 は「コア機能 (PR1〜PR6) を作り終えた後の拡張」です。コアの段階的な学習階段は PR6 で完結し、PR7 以降は外部アセット・公開作業など実務的なトピックを扱います。
 
 ## 学習の段階
 
@@ -51,7 +57,9 @@ flowchart LR
     PR3["PR3<br/>バイナリ glTF<br/>頂点バッファ<br/>インデックスバッファ"] --> PR4
     PR4["PR4<br/>スキニング行列<br/>インバースバインド<br/>頂点重み"] --> PR5
     PR5["PR5<br/>キーフレーム補間<br/>クォータニオン<br/>時間管理"] --> PR6
-    PR6["PR6<br/>Vertex Animation Texture<br/>テクスチャサンプル<br/>群衆最適化"]
+    PR6["PR6<br/>Vertex Animation Texture<br/>テクスチャサンプル<br/>群衆最適化"] --> PR7
+    PR7["PR7<br/>Sketchfab CC-BY<br/>ノードアニメ<br/>自前 GLB 構築<br/>軸マッピング推測"] --> PR8
+    PR8["PR8<br/>Vite サブパス<br/>GitHub Actions<br/>Pages デプロイ<br/>ライセンス整備"]
 ```
 
 ## なぜこの順序か
