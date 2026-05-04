@@ -399,16 +399,11 @@ function extractMesh(json: GltfJson, bin: Uint8Array): GltfMesh {
   if (nrmIdx === undefined) {
     throw new Error("glTF: meshes[0].primitives[0].attributes.NORMAL missing");
   }
-  if (jntIdx === undefined) {
-    throw new Error(
-      "glTF: meshes[0].primitives[0].attributes.JOINTS_0 missing",
-    );
-  }
-  if (wgtIdx === undefined) {
-    throw new Error(
-      "glTF: meshes[0].primitives[0].attributes.WEIGHTS_0 missing",
-    );
-  }
+  // JOINTS_0 / WEIGHTS_0 are only required for skinned meshes. Models exported
+  // without an armature (e.g. the Sketchfab "Flying Bird" whose animation is
+  // node-based and gets baked entirely into VAT) legitimately omit them.
+  // We accept the absence, fall back to zero-filled arrays so downstream
+  // typing stays the same, and let the runtime decide whether to consume them.
   if (prim.indices === undefined) {
     throw new Error("glTF: meshes[0].primitives[0].indices missing");
   }
@@ -427,19 +422,27 @@ function extractMesh(json: GltfJson, bin: Uint8Array): GltfMesh {
     "meshes[0].primitives[0].attributes.NORMAL",
     3,
   );
-  const joints = readJoints(
-    json,
-    bin,
-    jntIdx,
-    "meshes[0].primitives[0].attributes.JOINTS_0",
-  );
-  const weights = readFloat32(
-    json,
-    bin,
-    wgtIdx,
-    "meshes[0].primitives[0].attributes.WEIGHTS_0",
-    4,
-  );
+  const vertexCount = positions.length / 3;
+
+  const joints: Uint8Array<ArrayBuffer> | Uint16Array<ArrayBuffer> =
+    jntIdx !== undefined
+      ? readJoints(
+          json,
+          bin,
+          jntIdx,
+          "meshes[0].primitives[0].attributes.JOINTS_0",
+        )
+      : new Uint8Array(new ArrayBuffer(vertexCount * 4));
+  const weights: Float32Array<ArrayBuffer> =
+    wgtIdx !== undefined
+      ? readFloat32(
+          json,
+          bin,
+          wgtIdx,
+          "meshes[0].primitives[0].attributes.WEIGHTS_0",
+          4,
+        )
+      : new Float32Array(new ArrayBuffer(vertexCount * 4 * 4));
   const indices = readIndices(
     json,
     bin,
@@ -447,7 +450,6 @@ function extractMesh(json: GltfJson, bin: Uint8Array): GltfMesh {
     "meshes[0].primitives[0].indices",
   );
 
-  const vertexCount = positions.length / 3;
   if (
     normals.length / 3 !== vertexCount ||
     joints.length / 4 !== vertexCount ||

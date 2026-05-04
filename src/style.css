@@ -96,6 +96,32 @@ body {
   background: rgba(110, 168, 255, 0.4);
 }
 
+#credit {
+  position: fixed;
+  bottom: 12px;
+  right: 14px;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.55);
+  background: rgba(8, 12, 24, 0.45);
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  letter-spacing: 0.02em;
+  pointer-events: auto;
+}
+
+#credit a {
+  color: rgba(180, 210, 255, 0.85);
+  text-decoration: none;
+  border-bottom: 1px dotted rgba(180, 210, 255, 0.35);
+}
+
+#credit a:hover {
+  color: rgba(220, 235, 255, 1);
+}
+
 #msg {
   position: fixed;
   inset: 0;

@@ -31,10 +31,13 @@ struct VSOut {
   @location(1) speed: f32,
 }
 
-// Pigeon model is authored in glTF units (~1.6m tall). The boid sim
-// volume has half-extents of order ~1, so we shrink the model so 8000
-// pigeons fit comfortably inside the view.
-const PIGEON_SCALE: f32 = 0.04;
+// The Sketchfab "Flying Bird" model spans roughly 0.5 units in Blender
+// world space (after our manual GLB export — Blender's built-in glTF
+// exporter would have applied a 100x scale that broke alignment with VAT).
+// Each bird is rendered at scale ~0.075 sim units so 8000 instances
+// remain individually visible in the [-aspect..aspect] x [-0.4..0.4] x
+// [-1..1] simulation volume.
+const BIRD_SCALE: f32 = 0.15;
 
 @vertex
 fn vs_main(
@@ -76,20 +79,20 @@ fn vs_main(
   }
   let realUp = cross(forward, right);
 
-  // Pigeon body axes in glTF space:
-  //   +X = forward (head), +Y = lateral (wing tips), +Z = up.
-  // Our world frame uses (right, realUp, forward), so we swap accordingly.
+  // Sketchfab Flying Bird local axes (inferred from VAT extents):
+  //   +X = right wing direction, +Y = bird up, +Z = bird forward (head).
+  // Map them onto the per-instance world frame (forward, right, realUp).
   let world =
     b.pos.xyz +
-    forward * (localPos.x * PIGEON_SCALE) +
-    right   * (localPos.y * PIGEON_SCALE) +
-    realUp  * (localPos.z * PIGEON_SCALE);
+    right   * (localPos.x * BIRD_SCALE) +
+    realUp  * (localPos.y * BIRD_SCALE) +
+    forward * (localPos.z * BIRD_SCALE);
 
   // Rotate the bind-pose normal into the same per-instance frame.
   let nWorld =
-    forward * bindNormal.x +
-    right   * bindNormal.y +
-    realUp  * bindNormal.z;
+    right   * bindNormal.x +
+    realUp  * bindNormal.y +
+    forward * bindNormal.z;
 
   var out: VSOut;
   out.clip = view.mvp * vec4<f32>(world, 1.0);
