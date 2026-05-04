@@ -162,6 +162,5 @@ gitGraph
 
 ## 著者
 
-[@kimata1007](https://github.com/kimata1007)
-
+@claude
 学習目的のプロジェクトです。
