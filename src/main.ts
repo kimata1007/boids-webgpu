@@ -149,7 +149,7 @@ async function main(): Promise<void> {
   if (vatMeta.vertexCount !== mesh.vertexCount) {
     showMessage(
       `VAT vertexCount ${vatMeta.vertexCount} disagrees with glTF mesh ` +
-        `vertexCount ${mesh.vertexCount}; rebake with tools/bake_vat.py`,
+        `vertexCount ${mesh.vertexCount}; rebake with tools/bake_flying_bird.py`,
     );
     return;
   }

@@ -15,8 +15,6 @@ WebGPU の compute shader を使った 3D Boids（群行動）シミュレーシ
 - 右ドラッグ: 群れを散らす
 - Pause ボタン: 時間を止める
 
-> デモ GIF は Playwright で公開サイトを録画して生成しています（`npm run demo:capture`）。再生成には Google Chrome・ffmpeg・gifsicle が必要です。詳細は [`tools/capture_demo.mjs`](./tools/capture_demo.mjs) を参照。
-
 ## 動作要件
 
 WebGPU 対応ブラウザが必要です。
@@ -47,13 +45,10 @@ npm run dev
 /Applications/Blender.app/Contents/MacOS/Blender --background --python tools/bake_flying_bird.py
 ```
 
-> 学習用に残してある自家製プリミティブ・ハト生成スクリプト (`tools/make_pigeon.py`) と汎用 VAT 焼き出し (`tools/bake_vat.py`) もあります。これらは現在使われていませんが、PR1〜5 段階の追体験用に保持しています。
-
 ## プロジェクト構成
 
 ```
 boids-webgpu/
-├── docs/                     設計書（WebGPU 入門 + PR ごとの解説）
 ├── public/
 │   ├── flying_bird_static.glb  Sketchfab由来の鳥モデル(3メッシュ統合済み・静的)
 │   ├── flying_bird_vat.bin     Vertex Animation Texture (32フレーム × 529頂点)
@@ -66,14 +61,10 @@ boids-webgpu/
 │   ├── shaders/render.wgsl   VAT サンプル + Lambert 照明
 │   └── main.ts               初期化 〜 メインループ
 └── tools/
-    ├── make_pigeon.py        (学習用・現状未使用) 自家製プリミティブハト生成
     ├── bake_flying_bird.py   Sketchfab鳥モデル → 統合 + VAT焼き出し
-    ├── bake_vat.py           アニメーションを VAT に焼き出すスクリプト
     ├── inspect_glb.py        GLB の中身を検証するツール
     └── capture_demo.mjs      公開サイトを録画して README 用デモ GIF を生成
 ```
-
-詳細は [docs/README.md](./docs/README.md) を参照してください。WebGPU を初めて触る読者でも、最後まで読めばこのプロジェクトを再現できる構成にしています。
 
 ## 技術スタック
 
@@ -81,31 +72,6 @@ boids-webgpu/
 - **TypeScript** + **Vite** — フロントエンド開発
 - **Blender 5.1** + **Python** — 3D アセットの生成と VAT 焼き出し
 - **glTF 2.0 (GLB)** — 3D データ形式
-- 外部ライブラリ依存はなし（`@webgpu/types` のみ型情報）
-
-## ロードマップ進捗
-
-```mermaid
-gitGraph
-    commit id: "init: 2D Boids"
-    commit id: "PR1: 3D 化"
-    commit id: "PR2: pigeon.glb"
-    commit id: "PR3: glTF 読込"
-    commit id: "PR4: スキニング"
-    commit id: "PR5: アニメ"
-    commit id: "PR6: VAT 8000体" type: HIGHLIGHT
-```
-
-| PR | 内容 | 状態 |
-|----|------|------|
-| PR1 | 3D シーン化（透視カメラ + 深度バッファ） | ✅ |
-| PR2 | Blender Python でハトの 3D アセット生成 | ✅ |
-| PR3 | glTF ローダーと静的描画 | ✅ |
-| PR4 | スキニング（ボーンで翼を曲げる） | ✅ |
-| PR5 | アニメーション再生（時間軸でループ） | ✅ |
-| PR6 | VAT で 8000 体に拡張 | ✅ |
-
-各 PR の詳細は [docs/02-roadmap.md](./docs/02-roadmap.md) と [docs/pr/](./docs/pr/) にあります。
 
 ## アーキテクチャ概要
 
@@ -136,12 +102,6 @@ gitGraph
 | Texture (rgba16float) | VAT (32 frames × 752 vertices) |
 | Vertex Buffer | bind-pose の法線のみ |
 | Depth Texture (depth24plus) | 奥行き判定 |
-
-## 設計の特徴
-
-- **ゼロ依存** — Three.js も gl-matrix も使わず、glTF パーサも 4×4 行列も自前。WebGPU の API を理解する目的のため
-- **段階的構築** — 6 本の PR に分割し、各段階で動くものを保つ。スキニング → アニメ → VAT と進化する設計
-- **VAT による群衆最適化** — ランタイムでスキニング計算をせず、テクスチャ参照で済ませる。8000 体描画でも GPU 帯域がほぼ消費されない
 
 ## クレジット
 
