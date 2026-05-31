@@ -6,12 +6,16 @@ WebGPU の compute shader を使った 3D Boids（群行動）シミュレーシ
 
 ## デモ
 
-> 公開（GitHub Pages）後にスクリーンショット/録画を貼ります。
+[**▶ ライブデモ (GitHub Pages)**](https://kimata1007.github.io/boids-webgpu/)
+
+![8000 羽の鳥が群行動するデモ](public/demo.gif)
 
 操作:
 - 左ドラッグ: 群れを引き寄せる
 - 右ドラッグ: 群れを散らす
 - Pause ボタン: 時間を止める
+
+> デモ GIF は Playwright で公開サイトを録画して生成しています（`npm run demo:capture`）。再生成には Google Chrome・ffmpeg・gifsicle が必要です。詳細は [`tools/capture_demo.mjs`](./tools/capture_demo.mjs) を参照。
 
 ## 動作要件
 
@@ -65,7 +69,8 @@ boids-webgpu/
     ├── make_pigeon.py        (学習用・現状未使用) 自家製プリミティブハト生成
     ├── bake_flying_bird.py   Sketchfab鳥モデル → 統合 + VAT焼き出し
     ├── bake_vat.py           アニメーションを VAT に焼き出すスクリプト
-    └── inspect_glb.py        GLB の中身を検証するツール
+    ├── inspect_glb.py        GLB の中身を検証するツール
+    └── capture_demo.mjs      公開サイトを録画して README 用デモ GIF を生成
 ```
 
 詳細は [docs/README.md](./docs/README.md) を参照してください。WebGPU を初めて触る読者でも、最後まで読めばこのプロジェクトを再現できる構成にしています。
